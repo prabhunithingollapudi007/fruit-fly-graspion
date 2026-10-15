@@ -1,0 +1,5 @@
+# Tested offline with Python 3.12, numpy 2.3.5, scipy 1.15.2, opencv-contrib-python 4.13 (cv2.aruco present).
+numpy>=1.24
+scipy>=1.10
+opencv-contrib-python>=4.8   # ArucoDetector / CharucoDetector API
+pyserial>=3.5                # only for the real blaster and bot USB (register, dump, run without --sim)

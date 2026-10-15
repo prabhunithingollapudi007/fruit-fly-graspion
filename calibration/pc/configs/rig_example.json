@@ -1,0 +1,30 @@
+{
+  "_comment": "Example rig config. Every number is a placeholder: survey your own rig. Units: metres, radians.",
+  "arena": {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 1.0, "margin": 0.08, "home": null},
+  "reference_markers": {
+    "0": [0.02, 0.02],
+    "1": [0.98, 0.02],
+    "2": [0.98, 0.98],
+    "3": [0.02, 0.98]
+  },
+  "camera": {
+    "index": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 60,
+    "exposure": -9,
+    "intrinsics": "camera.npz",
+    "reference_size_m": 0.02
+  },
+  "bridge": {"port": "COM5", "period_ms": 110},
+  "bots": {
+    "90": {
+      "marker_id": 10,
+      "marker_size_m": 0.02,
+      "marker_offset": [0.0, 0.0],
+      "marker_yaw": 0.0,
+      "led_offset": [0.03, 0.0],
+      "reference_point": "marker centre (set marker_offset to use the body centre)"
+    }
+  }
+}

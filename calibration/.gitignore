@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+build/
+pc/sessions/
+pc/analysis/
+*.avi
