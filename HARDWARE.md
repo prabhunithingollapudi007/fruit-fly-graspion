@@ -6,6 +6,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 - **Paper:** Novkoski, Mélard, Delens, Wéry, Noirhomme, Pande, Maier, Smith & Vandewalle, *GRASPion: an Open-Source, Programmable Brainbot for Active Matter Research*. Rev. Sci. Instrum. **97**, 014704 (2026), doi:10.1063/5.0303152. Preprint: arXiv:2509.07437 (v1 only). Revised open postprint: https://orbi.uliege.be/handle/2268/343620
 - **Project site:** https://graspion.be. It lists the price as 120 EUR and offers a contact form for ordering.
 - **Compiled:** 2026-10-14. Sources were the upstream repo files, the four schematic PDFs (rendered and read), manufacturer datasheets, the paper and related papers, followed by an adversarial cross-check pass.
+- **Updated:** 2026-10-15, with toolchain facts verified by compiling while building [calibration/](calibration/README.md) (§9.1, §11). Nothing in this update has run on a bot.
 
 **Confidence labels used below.**
 
@@ -43,8 +44,9 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 4. When the bot dies from over-discharge or overcurrent, **only USB power revives it**. The button does not.
 5. `IrReceiver.begin(7)` kills Serial1 RX. A continuous 4800-baud UART over IR violates the TSOP's burst rules.
 6. MLX90393 sits at **0x10**, but the Adafruit library defaults to 0x0C. Always pass the address.
-7. With TinyUSB, `loop()` must return or call `delay()`/`yield()`, or uploads break. Never call `Serial.end()`.
+7. With TinyUSB, `#include <Adafruit_TinyUSB.h>` in every sketch, or `Serial` fails to link. `loop()` must return or call `delay()`/`yield()`, or uploads break. Never call `Serial.end()`.
 8. `examples/colors.ino` does **not compile** as published.
+9. Libraries built on **Adafruit BusIO** **fail to build at `opt=fastest`**: MLX90393 (verified) and APDS9960 (INFERRED). Use `opt=small` or raw `Wire` (§9.1).
 
 ---
 
@@ -359,6 +361,7 @@ void motorSet(uint8_t ch /*0 = RIGHT (D2), 1 = LEFT (D3)*/, float s /*-1..1*/, u
 **Magnetometer**, MLX90393 (0x10):
 - 3-axis Hall, 16-bit, 50 mT range, 0.161–3.22 µT/LSB (XY), I2C ≤ 400 kHz. INT and TRIG are **not connected**, so poll it.
 - The Adafruit library initialises at gain 1x, 16-bit, OSR_3, FILTER_7. With those settings `readData()` **blocks for about 210 ms**. For control loops, lower the filter/OSR or use `startSingleMeasurement()` and `readMeasurement()`.
+- **The Adafruit library does not build at `opt=fastest`** (§9.1). Build with `opt=small`, or drive the sensor over `Wire` directly. `calibration/firmware/calib_bot/calib_bot.ino` does the latter, with non-blocking conversions (compiled; UNTESTED on a bot).
 - The ERM magnets and motor currents disturb it. Sample with the motors stopped (EN LOW plus about 100 ms) or calibrate under the operating state (INFERRED).
 - The sensor's axis orientation relative to the body is **UNKNOWN**. Find it by rotating the bot flat through 360° and flipping it.
 
@@ -441,6 +444,7 @@ pinMode(10, OUTPUT); digitalWrite(10, HIGH); // enable the APDS IR-LED supply (n
 apds.begin(); apds.enableColor(true);     // Adafruit_APDS9960 defaults: 10 ms integration, 4x gain -> clear full scale ~4096
 ```
 
+- **Build at `opt=small`.** `Adafruit APDS9960 Library` 1.3.1 depends on Adafruit BusIO, which fails at `opt=fastest` (§9.1). So `sensing.ino` probably fails with the recommended FQBN, and `colors.ino` fails for this reason as well as its own (§11 item 12). This is INFERRED: the APDS sketches were not compiled.
 - **Never call `SPI.begin()` with this module fitted.** It hands D8 and D10 to SERCOM2 and breaks INT and the LED enable.
 - With D10 LOW, colour and ALS still work, but proximity and gesture have no IR LED.
 - Below about 3.35 V of battery the AP2112K is in dropout, so VLEDA ≈ V+. VLEDA falls below the APDS 3.0 V minimum at about 3.05–3.15 V of battery, depending on LED drive current and boost. Proximity weakens there (INFERRED).
@@ -565,16 +569,18 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 - **Index URL:** `https://raw.githubusercontent.com/GRASP-LAB/GRASPion/main/package_graspion_index.json`
 - **Platforms:** `graspion:samd` 1.0.0, built on Adafruit ArduinoCore-samd 1.7.17, and `graspion:nrf52` 1.0.3. The index keeps only the latest version of each.
 - **Body FQBN:** `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb`. The menu defaults are `opt=small` (-Os) and `usbstack=arduino`; the README asks for Ofast and TinyUSB.
+  - **Exception:** a sketch that uses any library built on Adafruit BusIO does not build at `opt=fastest`. That is verified for MLX90393 and INFERRED for APDS9960. Use `opt=small,usbstack=tinyusb` for it (see "Build failures" below).
 - The upstream README still says to use "Adafruit QT Py M0", and `examples/upload_all.sh` uses `adafruit:samd:adafruit_qtpy_m0`. **Do not.** That variant drives D12 (motor enable) HIGH at boot while the PWM pins float. The authors' own unmerged README proposal recommends GRASPion Body.
-- **Libraries** (exact Library Manager names):
-  - `Adafruit NeoPixel`
+- **Libraries** (exact Library Manager names). A version means it was compiled for graspionBody on 2026-10-15:
+  - `Adafruit NeoPixel` (1.15.5)
   - `Adafruit DMA neopixel library` (samd only)
-  - `Adafruit APDS9960 Library`
-  - `Adafruit MLX90393` (pulls in `Adafruit SSD1306`)
-  - `Adafruit Unified Sensor`
-  - `Adafruit BusIO`
-  - `IRremote` (4.x API; source reviewed at 4.7.1, not compiled, so pin `IRremote@4.7.1`)
+  - `Adafruit APDS9960 Library` (depends on BusIO, so `opt=small`)
+  - `Adafruit MLX90393` (2.0.5; pulls in `Adafruit SSD1306`; depends on BusIO, so `opt=small`)
+  - `Adafruit Unified Sensor` (1.1.15)
+  - `Adafruit BusIO` (1.17.4; **fails at `opt=fastest`**)
+  - `IRremote` (4.7.1; 4.x API, so pin `IRremote@4.7.1`)
 - `Adafruit_ZeroDMA` and `Adafruit_TinyUSB` are bundled in the core.
+- **With `usbstack=tinyusb`, every sketch must `#include <Adafruit_TinyUSB.h>`**, or `Serial` fails to link (see below). Guard the include with `#if defined(USE_TINYUSB)` if the sketch must also build with `usbstack=arduino`.
 
 ```bash
 arduino-cli config init   # only needed once, on a fresh install
@@ -582,10 +588,32 @@ arduino-cli config add board_manager.additional_urls https://raw.githubuserconte
 arduino-cli core update-index && arduino-cli core install graspion:samd
 arduino-cli lib install "Adafruit NeoPixel" "Adafruit DMA neopixel library" "Adafruit APDS9960 Library" "Adafruit MLX90393" "Adafruit Unified Sensor" "Adafruit BusIO" "IRremote@4.7.1"
 arduino-cli compile --fqbn graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb --output-dir build/mysketch mysketch
+arduino-cli compile --fqbn graspion:samd:graspionBody:opt=small,usbstack=tinyusb --output-dir build/mysketch mysketch   # sketches using BusIO-based libraries
 arduino-cli upload  --fqbn graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb -p COMx --input-dir build/mysketch mysketch
 ```
 
-These commands are UNTESTED here because arduino-cli was not installed. The sketch `.ino` must sit in a folder of the same name.
+The sketch `.ino` must sit in a folder of the same name.
+
+**What was compiled** (2026-10-15): arduino-cli 1.5.2-rc.1 on Windows 11, `graspion:samd` 1.0.0 with its bundled arm-none-eabi-gcc 9-2019q4. Builds only; nothing was flashed or run.
+
+| Sketch | FQBN options | Result |
+|---|---|---|
+| `calibration/firmware/calib_bot` (IRremote, NeoPixel, Wire; MLX90393 over raw Wire), both PWM modes | `opt=fastest,usbstack=tinyusb` | builds: 61 KB flash, ~21 KB static RAM |
+| Minimal Adafruit MLX90393 sketch | `opt=fastest,usbstack=tinyusb` | **fails**: `lo register required` |
+| Same sketch | `opt=small,usbstack=tinyusb` | builds: 44 KB flash |
+| Adafruit BusIO only (`Adafruit_I2CDevice`, no sensor library) | `opt=fastest,usbstack=tinyusb` | **fails**: same error |
+| `Serial` without `#include <Adafruit_TinyUSB.h>` | `opt=fastest,usbstack=tinyusb` | **fails to link** |
+| `calibration/blaster/ir_blaster` (IR bridge, not for bots) | `graspion:samd:adafruit_qtpy_m0:opt=fastest,usbstack=tinyusb` | builds once the TinyUSB header is included |
+
+Not run: `upload` (no bot attached), `opt=fast`/`opt=faster`, and any sketch with `Adafruit APDS9960 Library` or `Adafruit DMA neopixel library`, which were not installed.
+
+**Build failures and workarounds** (verified by compiling as above):
+1. **Adafruit BusIO at `opt=fastest`.** BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-Ofast`, gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library. `Adafruit APDS9960 Library` 1.3.1 also depends on BusIO, so it is INFERRED to fail the same way. Workarounds:
+   - build with **`opt=small`** (-Os). This applies to the whole sketch and core, not just BusIO;
+   - or drive the device over `Wire` directly, as `calibration/firmware/calib_bot/calib_bot.ino` does for the MLX90393 (datasheet command set, register layout from the Adafruit library; about 80 lines).
+   - A `"+l"` (low-register) constraint in the core's `delay.h` should fix it at the source (INFERRED; not tried, and it means editing the installed core).
+2. **TinyUSB include.** With `usbstack=tinyusb`, a sketch that never includes `<Adafruit_TinyUSB.h>` fails to link with `undefined reference to 'Serial'` and `Adafruit_USBD_CDC::begin`. arduino-cli links the bundled TinyUSB library only when a sketch includes it. Seen on both `graspionBody` and `adafruit_qtpy_m0` of this core.
+3. **Long paths on Windows.** If the arduino-cli data directory sits under a long path, gcc fails with `cannot execute 'cc1plus'` (Windows MAX_PATH). Keep the default `%LOCALAPPDATA%\Arduino15`, or map a short drive letter with `subst` and point `directories.data` there.
 
 ### 9.2 Upload, bootloader and recovery
 
@@ -625,6 +653,7 @@ These commands are UNTESTED here because arduino-cli was not installed. The sket
 - `millis`, PWM, baud rates and DDS frequencies therefore differ by up to about ±2 % between bots, and between USB and battery operation. **Expect intrinsic frequency spread in oscillator/synchronisation experiments.**
 
 **TinyUSB stack (as the README requires):**
+- Every sketch must `#include <Adafruit_TinyUSB.h>`, or `Serial` fails to link (§9.1).
 - USB is serviced only in `yield()`, which runs after each `loop()` and inside `delay()`. A `loop()` that never returns or yields breaks uploads.
 - **`Serial.end()` removes the COM port.** The examples call it when `mVusb < 4500`, so the port vanishes until reset.
 - Never use `while(!Serial)`: it blocks forever on battery.
@@ -638,12 +667,12 @@ These commands are UNTESTED here because arduino-cli was not installed. The sket
 3. **Motor overdrive:** full scale (254) gives about 3.3 V, the motor's maximum. The rated 2.7 V is about analogWrite 231 (INFERRED).
 4. **Power:** the button only works if the AVR still has SYS. After over-discharge, overcurrent (≥ 400 mA) or ship mode, **only USB revives the bot**.
 5. **IR:** IRremote kills Serial1 RX. 4800-baud UART-over-IR breaks the TSOP AGC4 rules. NEC addresses are ignored. Keep D6 HIGH when idle.
-6. **MLX90393:** the address is 0x10, but the library default is 0x0C. `readData()` blocks about 210 ms with the default filter. Motor magnets disturb readings.
+6. **MLX90393:** the address is 0x10, but the library default is 0x0C. `readData()` blocks about 210 ms with the default filter. Motor magnets disturb readings. The Adafruit library does not build at `opt=fastest` (item 18).
 7. **`randomSeed(analogRead(A0))`** gives about 0 in the dark, so all bots get the same sequence, and `randomSeed(0)` is a no-op. Seed from the 128-bit chip serial XOR a few ADC LSBs.
 8. **`analogRead`** is 10-bit unless you call `analogReadResolution(12)`.
 9. **SPI vs the APDS front module:** `SPI.begin()` breaks APDS INT (D8) and the LED enable (D10).
 10. **SERCOM3:** ZeroDMA NeoPixels and the SPI1 flash cannot run together.
-11. **TinyUSB:** keep `loop()` yielding, never call `Serial.end()`, never `while(!Serial)`.
+11. **TinyUSB:** `#include <Adafruit_TinyUSB.h>` in every sketch, or arduino-cli fails to link `Serial`. Keep `loop()` yielding, never call `Serial.end()`, never `while(!Serial)`.
 12. **`examples/colors.ino` does not compile:** `launchDIFF()` and `launchBALL()` are undefined, and AV/0x0A is not handled. Its 0x13 handler, and `sensing.ino`'s, prints labels to `Serial` but values to `Serial1`.
 13. **`readBrdPwr` uses a `char` buffer.** It works on ARM only because `char` is unsigned there. Use `uint8_t`.
 14. **Divide-by-zero in the examples:** `x/c` and `c/cmax` when the clear count is 0 (for example pressing MENU in the dark sets `cmax = 0`).
@@ -655,6 +684,9 @@ These commands are UNTESTED here because arduino-cli was not installed. The sket
     - The paper's photos show board **V1.1**, not V1.3.
 16. **Plain-text extraction of the arXiv HTML** turns "9 mm / 6 g / 2 MB" into "99 mm / 66 g / 22 MB". Trust the PDF.
 17. **Battery-dependent behaviour:** NeoPixel brightness, IR LED current and high-duty motor speed all change between USB and battery and with charge state. The DRV2603 compensates only while V+ ≥ about 3.4 V (INFERRED).
+18. **Build failures** (verified by compiling, §9.1):
+    - **Adafruit BusIO at `opt=fastest`:** the core's `delayMicroseconds` inline asm (`"+r"`) gets `ip` at `-Ofast`, and Thumb-1 rejects it: `lo register required -- 'sub ip,#1'`. This breaks the MLX90393 library with the recommended FQBN, and very likely APDS9960, which also depends on BusIO (INFERRED). Use `opt=small`, or raw `Wire` as in `calibration/firmware/calib_bot/calib_bot.ino`.
+    - **Windows:** a long arduino-cli data path gives `cannot execute 'cc1plus'` (MAX_PATH). Use the default `%LOCALAPPDATA%\Arduino15` or a `subst` drive.
 
 **Example sketch IR command table** (NEC command byte):
 
@@ -729,6 +761,7 @@ These commands are UNTESTED here because arduino-cli was not installed. The sket
   - Adafruit_nRF52_Arduino 1.7.0
   - IRremote 4.7.1
   - Adafruit MLX90393, APDS9960 and SPIFlash libraries
+- **Build tests** (§9.1): arduino-cli 1.5.2-rc.1 with graspion:samd 1.0.0, Adafruit MLX90393 2.0.5, Adafruit BusIO 1.17.4, IRremote 4.7.1 and Adafruit NeoPixel 1.15.5, 2026-10-15; the library dependency lists come from the Arduino library index. The sketches are in [calibration/](calibration/README.md) (commit fa28d91), plus minimal MLX90393, BusIO-only and no-TinyUSB-include test sketches.
 - **Papers and site:**
   - RSI 97, 014704 (2026) / arXiv:2509.07437 / ULiège postprint
   - Noirhomme et al., PR Applied 23, 064008 (2025)

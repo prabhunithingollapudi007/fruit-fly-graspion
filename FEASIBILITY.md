@@ -8,7 +8,7 @@
 - the lab's digital-twin repo (github.com/GRASP-LAB/brainbot-digital-twin);
 - datasheets and papers.
 
-An adversarial cross-check pass followed, and every cited paper was verified against its primary page. Nothing has been measured on a real bot yet. Labels follow HARDWARE.md: **ESTIMATE** = my arithmetic, **INFERRED** = reasoned, **UNKNOWN** = must be measured.
+An adversarial cross-check pass followed, and every cited paper was verified against its primary page. Updated the same day with findings from building the Phase 0 tooling in [calibration/](calibration/README.md): CoR identifiability (§4) and the implementation pointers in §5.2–5.4. Nothing has been measured on a real bot yet. Labels follow HARDWARE.md: **ESTIMATE** = my arithmetic, **INFERRED** = reasoned, **UNKNOWN** = must be measured.
 
 ---
 
@@ -25,7 +25,7 @@ An adversarial cross-check pass followed, and every cited paper was verified aga
    - counter-clockwise turns only exist above about 7.3 cm/s, with a tightest radius of about 6.5 cm.
    - **Your benchmark figure-8 (A 0.15, B 0.20) is not trackable on that envelope as specified** (§4).
 4. **Blocker 3: the simulator is too ideal.** It applies (v, ω) instantly with only a linear gain/bias mismatch. It has no delay, no lag, no noise, a centre-of-rotation (CoR) offset of 0–4 mm, and a box action set of v ∈ [0, 0.15] m/s, ω ∈ ±5.3 rad/s. The real loop has:
-   - 14.5–16.1 mm CoR offset in every turn;
+   - 14.5–16.1 mm CoR offset in every turn (the twin's values; steady-state calibration can only identify their mean, about 15.3 mm, §4);
    - a motor that reaches 50 % in 50 ms;
    - ≈ 90–260 ms from camera to motor (ESTIMATE).
    - **The trained checkpoints cannot be deployed as-is. Retrain on an identified plant.**
@@ -157,11 +157,20 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 | action | (v, ω), box v ∈ [0, 0.15], ω ∈ ±5.3 | motor powers (L, R), coupled, nonlinear and battery-dependent |
 | plant mismatch | g_v U(0.55, 0.95), g_ω U(0.70, 1.05), bias U(−0.15, 0.20) rad/s | at L = R: ω = −0.69 … −1.15 rad/s. Polynomial-model residual: v 0.38–0.52 cm/s, ω 0.19–0.22 rad/s |
 | reachable set | box | v 4.7–11.5 cm/s. ω > 0 only at v 7.3–10.6 cm/s; ω ≥ 0.8 only at v 8.5–9.3 cm/s; max +1.43 rad/s at (L60, R120). Single-motor pivots give ~3.2–3.7 rad/s **both ways** (INFERRED from paper figure data) but were not in the twin's grid |
-| CoR offset | U(0, 4 mm), 0 nominal | **14.5 mm (CW) / 16.1 mm (CCW)**, applied in every turn (twin MPC and your own det_10 DMPC). At ω = 1.4 rad/s that adds 2.0–2.3 cm/s of point speed |
+| CoR offset | U(0, 4 mm), 0 nominal | **14.5 mm (CW) / 16.1 mm (CCW)**, applied in every turn (twin MPC and your own det_10 DMPC). At ω = 1.4 rad/s that adds 2.0–2.3 cm/s of point speed. Only the mean, 15.3 mm, is identifiable from steady-state data (below) |
 | dynamics | instantaneous | motor 50 % / 90 % in 50 / 100 ms; legs and body UNKNOWN |
 | delay | 0 | ≈ 90–260 ms (§3.3) |
 | noise | process noise off in training; perfect pose | heading diffusion UNKNOWN; tracker noise ≈ 0.05–0.3 mm (ESTIMATE) |
 | clock | exact | crystalless SAMD21, ±2 % on battery |
+
+**CoR offset: only the mean is identifiable.** In the twin's kinematics (and `EllipticalBot2D`), the forward speed of the reference point is u₁ = v + d_ccw·ω⁺ + d_cw·ω⁻, with ω⁺ = max(ω, 0) and ω⁻ = max(−ω, 0). Since |ω| = ω⁺ + ω⁻ and ω = ω⁺ − ω⁻:
+
+  d_ccw·ω⁺ + d_cw·ω⁻ = d·|ω| + ((d_ccw − d_cw)/2)·ω,  with d = (d_ccw + d_cw)/2.
+
+- In the calibration model, ω is linear in the motor activations (f_L, f_R), and so is v(f). The asymmetric term is therefore absorbed exactly by v(f). Any (d_ccw, d_cw) with the same mean fits steady-state (L, R) → twist data equally well, with a correspondingly shifted v(f), unless v(f) is restricted by assumption.
+- **The twin's 14.5 / 16.1 mm split is therefore a modelling choice**, not something this data can confirm. Use `dist_rotPoint_to_CoM = [d, d]` in `EllipticalBot2D` together with the fitted v(f); at steady state that is exactly equivalent.
+- d itself is identified only through the kink of |ω| at ω = 0. The calibration grid must therefore contain both CW and CCW turns; the §5.2 grid does.
+- The calibration's `cor` forward-map variant fits u₁ = v(f) + d·|ω̂| and exports d as `cor_offset_m` (§5.3). On a simulated rig with a 14.5 / 16.1 mm split it recovered 15.3 mm, the mean. That validates the code path, not the robot.
 
 **Figure-8 feasibility.** Your test figure-8 has a 1.072 m path per lap and a 25.4 mm minimum radius of curvature at its slowest point.
 - **Mean lap speed:** 6.70 / 5.36 / **3.83** cm/s at T = 16 / 20 / 28 s. T = 28 is below the 4.7 cm/s floor even on average; on average, T ≤ 22.8 s is needed.
@@ -200,6 +209,8 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 ### 5.2 Protocol (UNTESTED design)
 
+**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It compiles and passes 55 offline tests on a simulated rig, but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
+
 **Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the PC re-centres the bot between segments. The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
 
 0. **Rig.**
@@ -212,12 +223,12 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
    - Fit the 20–22 mm ArUco on an identical cap (§3.3 placement rules); record ID ↔ chip serial; measure the marker offset from the body axis.
    - **Choose the PWM mode first.** The examples default to 732 Hz, out of DRV2603 spec; the in-spec option is 40 kHz. The twin's mode is UNKNOWN because its body firmware is unpublished. A map measured in one mode is invalid in the other, so A/B-test 5 points on bot #1.
 2. **Firmware (calibration and all later phases).**
-   - Build with `graspion:samd:graspionBody`; `pinMode(BUZ_ENABLE, OUTPUT)` first; 128 = stop; EN LOW when stopped.
+   - Build with `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb` and `#include <Adafruit_TinyUSB.h>` (HARDWARE.md §9.1); `pinMode(BUZ_ENABLE, OUTPUT)` first; 128 = stop; EN LOW when stopped.
    - **Command watchdog:** stop (128, EN LOW) when no valid, address-matched frame arrives within 2–3 frame periods (~300 ms; ESTIMATE). Optionally add a hardware watchdog (Adafruit SleepyDog) against firmware hangs.
    - IR receive with **address filtering** (bot ID from the chip serial). Keep D6 (IR TX) driven HIGH and the IR LED off during runs, otherwise a floating line can key ~100 mA of IR and jam every receiver.
    - Sync flash on one channel of the top NeoPixel at ~15 % only: a full-white flash plus motor start current can approach the 400 mA overcurrent trip.
    - Log mVbat from the AVR at 0x36 (verify the bytes against a multimeter). Abort the run when mVbat under load falls below ~3.4 V. Keep a USB cable at hand, because trips need USB to recover.
-   - Log the MLX90393 (address 0x10, fast non-blocking settings) in every segment and at rest. The magnetometer offset map b(L, R) for Phase 2 then comes for free.
+   - Log the MLX90393 (address 0x10, fast non-blocking settings) in every segment and at rest. The magnetometer offset map b(L, R) for Phase 2 then comes for free. Drive it over raw `Wire`, as `calib_bot` does: the Adafruit library (via BusIO) does not build at `opt=fastest` (HARDWARE.md §9.1).
 3. **Bench checks.**
    - 60 s static tracking → measurement-noise floor.
    - LED-sync visibility.
@@ -240,6 +251,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 - **Forward map (L, R, V_bat) → (u₁, u₂, ω).**
   - Use a physical parametric model, f(p) = max(0, |p| − p₀)^γ per motor with twist linear in (f_L, f_R, 1), or a GP.
   - Select by grouped cross-validation. Not a 10-term cubic on 49 noisy points.
+  - The calibration tooling compares four variants: `lin` (twist on [1, f_L, f_R]), `int` (+ f_L·f_R), `cor` and `bat` (+ battery terms). `cor` uses the twin's kinematics, u₁ = v(f) + d·|ω̂| with ω̂ the model's ω, and exports the mean CoR offset d as `cor_offset_m`. Only that mean is identifiable (§4).
 - **Inverse map + feasible set.**
   - A closed-form 2×2 solve needs no LUT and is MCU-friendly.
   - Export the feasible set as a polytope a·v + b·ω ≤ c for the MPC constraints and the RL action projection.
@@ -256,9 +268,11 @@ Add a calibrated-plant env mixin that:
 5. adds measured noise;
 6. integrates at the tracked point, with tracker noise.
 
+The calibration tooling's `calib.json` holds each of these pieces: polytope, inverse map, forward map and bootstrap draws, lag, dead time, latency and noise (calibration/README.md §6).
+
 Then:
 - Replace the gain/bias DR with posterior-predictive draws of F_θ.
-- Replace CoR U(0, 4 mm) with the measured ICR (14.5/16.1 mm is the twin's value).
+- Replace CoR U(0, 4 mm) with the fitted mean offset d (`cor_offset_m`), as `dist_rotPoint_to_CoM = [d, d]` together with the fitted v(f). Do not import the twin's 14.5/16.1 mm split: steady-state data cannot distinguish it from [d, d] (§4).
 - Enable process noise.
 - Replace the ±5.3 rad/s box with the feasible set.
 - Regenerate references inside the envelope.
@@ -375,6 +389,7 @@ Then:
   - The worktree `runs/full/report/{RESULTS.md, tables/}`.
   - `robots/brainbot/controllers/dmpc/acados_simple/det_10/`.
 - **Lab code:** github.com/GRASP-LAB/brainbot-digital-twin @ 9ee0aa8 (`generate_LUT/*`, `tinympc_deployment_code/*`).
+- **Calibration tooling:** [calibration/](calibration/README.md) (commit fa28d91), in particular `pc/graspion_calib/forward_map.py` (CoR identifiability) and `sim.py` (the simulated rig).
 - **Hardware:** [HARDWARE.md](HARDWARE.md).
 - **Per-operation costs and protocol facts:**
   - Qfplib-M0 cycle table;
