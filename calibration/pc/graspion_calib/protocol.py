@@ -3,9 +3,13 @@
 One NEC-timed 32-bit frame, LSB first (IRremote ``sendNECRaw`` / ``decodedRawData``)::
 
     byte 0  bot ID 1..254 (0xFF = broadcast, STOP only)
-    byte 1  op (3 high bits) | CRC-5 (5 low bits)
+    byte 1  op (3 high bits) | CRC-5 check bits (5 low bits)
     byte 2  L code = 128 + drive_L   (drive -127..127, code 128 = stop, code 0 invalid)
     byte 3  R code = 128 + drive_R
+
+The CRC-5 runs over the whole frame in on-air order (raw bit 0 first), so its guarantees hold for physical
+errors: every single-bit error, every burst of up to 5 consecutive on-air bits, and every 2-bit error except
+raw bits 0 + 31 (first and last on air) is detected. See ``crc5_air`` and calib_protocol.h.
 
 ``python -m graspion_calib.protocol --write-vectors`` regenerates ``calib_protocol_vectors.h`` in both sketch
 folders; the sketches ``static_assert`` those vectors, so a successful firmware compile proves that the C
@@ -17,7 +21,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-PROTO_VERSION = 1
+PROTO_VERSION = 2          # 2: CRC in on-air bit order; builds of version 1 and 2 reject each other's frames
 ADDR_BROADCAST = 0xFF
 
 OP_STOP = 0
@@ -42,17 +46,32 @@ def code(d: int) -> int:
     return 128 + clamp_drive(d)
 
 
-def crc_msg(bot_id: int, op: int, lcode: int, rcode: int) -> int:
-    return ((bot_id & 0xFF) << 19) | ((op & 7) << 16) | ((lcode & 0xFF) << 8) | (rcode & 0xFF)
+def _crc5_bit(crc: int, b: int) -> int:
+    fb = ((crc >> 4) ^ b) & 1
+    return ((crc << 1) ^ 0x05) & 0x1F if fb else (crc << 1) & 0x1F
 
 
-def crc5(msg: int) -> int:
-    """CRC-5, poly 0x05, init 0x1F, MSB first over the 27-bit message, no reflection, no final XOR."""
-    crc = 0x1F
-    for bit in range(26, -1, -1):
-        fb = ((crc >> 4) ^ (msg >> bit)) & 1
-        crc = ((crc << 1) ^ 0x05) & 0x1F if fb else (crc << 1) & 0x1F
+def crc5_air(raw: int, crc: int = 0x1F) -> int:
+    """CRC-5 register (poly 0x05, init 0x1F, MSB-first register, no reflection, no final XOR) after the 32 frame
+    bits in on-air order, raw bit 0 first. 0 for a valid frame: read in that order, the frame is a code word."""
+    for i in range(32):
+        crc = _crc5_bit(crc, (raw >> i) & 1)
     return crc
+
+
+def _rev5(v: int) -> int:
+    return ((v & 1) << 4) | ((v & 2) << 2) | (v & 4) | ((v & 8) >> 2) | ((v & 16) >> 4)
+
+
+def crc_field(data: int) -> int:
+    """Check bits for raw bits 8..12 of ``data`` (a frame with those bits 0): the one value that makes
+    ``crc5_air`` of the whole frame 0. The register over ``data`` is the remainder to cancel. A check value c
+    enters the register as c * x^24 (raw bit 12 is x^24), so c = remainder * x^-24 = remainder * x^7 (mod the
+    polynomial, period 31): 7 zero steps. Raw bit 8 goes out first, so it takes c's top bit (bit-reversed)."""
+    crc = crc5_air(data)
+    for _ in range(7):
+        crc = _crc5_bit(crc, 0)
+    return _rev5(crc)
 
 
 def pack(bot_id: int, op: int, L: int = 0, R: int = 0) -> int:
@@ -60,9 +79,8 @@ def pack(bot_id: int, op: int, L: int = 0, R: int = 0) -> int:
         raise ValueError(f"bot id {bot_id} out of range")
     if not 0 <= op <= 7:
         raise ValueError(f"op {op} out of range")
-    lc, rc = code(L), code(R)
-    b1 = ((op & 7) << 5) | crc5(crc_msg(bot_id, op, lc, rc))
-    return (bot_id & 0xFF) | (b1 << 8) | (lc << 16) | (rc << 24)
+    data = (bot_id & 0xFF) | ((op & 7) << 13) | (code(L) << 16) | (code(R) << 24)
+    return data | (crc_field(data) << 8)
 
 
 @dataclass(frozen=True)
@@ -84,8 +102,7 @@ def check(raw: int) -> int:
     lc, rc = (raw >> 16) & 0xFF, (raw >> 24) & 0xFF
     if lc == 0 or rc == 0:
         return ERR_CODE
-    msg = crc_msg(raw & 0xFF, (raw >> 13) & 7, lc, rc)
-    return OK if crc5(msg) == ((raw >> 8) & 0x1F) else ERR_CRC
+    return OK if crc5_air(raw) == 0 else ERR_CRC
 
 
 def unpack(raw: int) -> Frame:
@@ -126,12 +143,33 @@ def bot_id_from_usb_serial(serial: str) -> int:
     return bot_id_from_words(words_from_usb_serial(serial))
 
 
+# ----------------------------------------------------------------------------- device info
+def info_fields(line: str) -> dict:
+    """key=value fields of an info line: the bot's 'i' reply or the blaster's 'V' reply ("I ... proto=2 ...")."""
+    return dict(kv.split("=", 1) for kv in line.split() if "=" in kv)
+
+
+def proto_error(info, device: str, sketch: str) -> str | None:
+    """None if info (an info line, or its fields as a dict) reports PROTO_VERSION; else why `device` must be
+    reflashed with `sketch`. Builds of different protocol versions reject each other's frames as CRC errors."""
+    proto = (info_fields(info) if isinstance(info, str) else info).get("proto")
+    if proto == str(PROTO_VERSION):
+        return None
+    return (f"{device} reports IR protocol {proto if proto is not None else '(none)'}, this PC code protocol "
+            f"{PROTO_VERSION}: each side would reject the other's frames as CRC errors. Reflash {sketch} from this "
+            f"repository (calib_protocol.h with CALIB_PROTO_VERSION {PROTO_VERSION})")
+
+
 # ----------------------------------------------------------------------------- C test vectors
 VECTOR_FRAMES = [
     (1, OP_STOP, 0, 0), (0x5A, OP_SEG, 60, 80), (0x5A, OP_DRIVE, -90, 90), (254, OP_RECENTRE, 0, 100),
     (17, OP_PING, 0, 0), (ADDR_BROADCAST, OP_STOP, 0, 0), (200, OP_SEG, 127, -127), (3, OP_SEG, 300, -300),
     (128, OP_DRIVE, 55, 120), (77, OP_RECENTRE, 120, 0),
 ]
+# On-air error patterns XORed into DRIVE(0x5A, 80, 80): the 2..5-bit bursts that protocol 1 missed, then raw
+# bits 0 + 31, the one 2-bit error the CRC cannot see. Pins the on-air bit order of calib_check.
+VECTOR_ERRORS = [0x180, 0x3800, 0x1600000, 0x2C00000, 0x3A00000, 0x80000001]
+_C_RESULT = {OK: "CALIB_OK", ERR_CODE: "CALIB_ERR_CODE", ERR_CRC: "CALIB_ERR_CRC"}
 VECTOR_SERIALS = [
     (0x00000000, 0x00000000, 0x00000000, 0x00000000),
     (0x12345678, 0x9ABCDEF0, 0x0F1E2D3C, 0x4B5A6978),
@@ -154,6 +192,11 @@ def vectors_header() -> str:
         lines.append(f"static_assert(calib_check(0x{raw:08X}UL) == CALIB_OK, \"check ok\");")
         lines.append(f"static_assert(calib_check(0x{raw ^ (1 << 20):08X}UL) != CALIB_OK, \"check flip\");")
     lines.append(f"static_assert(calib_check(0x{pack(9, OP_SEG, 10, 10) & 0xFF00FFFF:08X}UL) == CALIB_ERR_CODE, \"code 0\");")
+    base = pack(0x5A, OP_DRIVE, 80, 80)
+    for e in VECTOR_ERRORS:
+        r = check(base ^ e)
+        lines.append(f"static_assert(calib_check(0x{base ^ e:08X}UL) == {_C_RESULT[r]}, "
+                     f"\"{'on-air blind spot' if r == OK else 'on-air burst'}\");")
     for w in VECTOR_SERIALS:
         args = ", ".join(f"0x{x:08X}UL" for x in w)
         lines.append(f"static_assert(calib_serial_hash({args}) == 0x{serial_hash(w):08X}UL, \"fnv\");")

@@ -8,6 +8,13 @@ Geometry (FEASIBILITY.md 3.3):
     exact in the marker plane and has no parallax error for the bot markers.
   * The homography is fitted once from the median of the first `ref_frames` frames (no per-frame jitter) and
     then watched: a reference drifting more than `ref_tol_m` raises a warning (bumped rig).
+  * With exactly 4 references the fit is an exact solve, so their reprojection RMS is 0 whatever the survey
+    says (reproj_rms_m is NaN then). The survey check is the shape of each reference marker in the fitted frame
+    (ref_check, reference_summary()): side length against the other references, aspect and diagonals, and the
+    median side against the printed size (ref_size_m). A mistyped or badly surveyed centre warps the fitted
+    frame and distorts the markers. Gross errors only: the tolerance is max(5 %, 2 px / marker side), e.g. a
+    0.1 m typo shows with 60 mm references, a 10 mm survey error does not. With 5 or more references
+    reproj_rms_m is a real residual.
   * Right-handed world frame (z up, towards the camera): the reference coordinates must not be mirrored. This
     is checked from the corner order of the reference markers (ArUco corners are clockwise on the printed
     marker), and the tracker refuses to start on a mirrored layout, which would flip the sign of omega.
@@ -19,6 +26,16 @@ Geometry (FEASIBILITY.md 3.3):
     on grey or white surroundings, so a flash shows up whatever the background brightness. The LED must sit
     outside the marker and its white quiet zone. The patch is located in the raw (distorted) image: the
     world point is mapped through H^-1 to undistorted pixels and then re-distorted.
+  * LED height: the LED sits on the PCB, below the marker cap. Seen through the marker-plane homography it
+    appears pulled towards the camera nadir by r * dh / (Hc - dh) (~5 mm, several pixels, 0.5 m off-centre with
+    dh = 10 mm, Hc = 1 m), enough to miss the 7 px patch near the walls. Set bots.<id>.led_height (LED height
+    minus marker height, negative below) and the tracker projects the 3-D LED point with the camera pose
+    recovered from H and the intrinsics K, or, without K, scales about the image-centre point by Hc / (Hc - dh)
+    with camera_height_m (camera above the marker plane).
+  * Mono cameras (2-D frames, or B = G = R): chroma is identically 0 there, so no flash would ever be found.
+    The tracker detects this when it fits the homography and logs the patch *brightness* in led_b instead
+    (led_mode 'luma'; led_r = NaN, so a red low-battery flash cannot be told from a sync flash). Check the rise
+    in tracker.csv; a colour camera is still preferred.
 Use a fixed short exposure (<= 2-5 ms) and flicker-free DC lighting.
 """
 from __future__ import annotations
@@ -31,6 +48,8 @@ import cv2
 import numpy as np
 
 from .poses import Detection, PoseStore, TrackerCSV
+
+REF_WARN_EVERY = 300                        # frames between repeated "reference off" warnings (~5 s at 60 fps)
 
 
 def make_detector(dictionary="DICT_4X4_50"):
@@ -81,11 +100,28 @@ class BotMarker:
     marker_id: int
     led_offset: tuple = (0.012, 0.0)    # sync LED in the marker frame (forward, left) [m]; measure per bot
     size_m: float = 0.02
+    led_height: float = 0.0             # LED height minus marker height [m]; negative when the LED sits lower
+
+
+def led_mode_of(img):
+    """'luma' for a mono stream (2-D frames, or B = G = R to within rounding nearly everywhere: what a grey
+    stream looks like after the driver's conversion to BGR), else 'chroma'. A real colour sensor never gives
+    equal channels across the frame (noise, demosaicing). Synthetic grey renders count as mono: pass
+    led_mode='chroma' to the Tracker for those."""
+    if img.ndim == 2 or img.shape[2] == 1:
+        return "luma"
+    sub = img[::8, ::8].astype(np.int16)
+    diff = np.maximum(np.abs(sub[..., 0] - sub[..., 1]), np.abs(sub[..., 1] - sub[..., 2]))
+    return "luma" if np.mean(diff > 1) < 1e-3 else "chroma"
 
 
 class Tracker:
     def __init__(self, ref_world: dict, bot_markers: dict | None = None, undistorter: Undistorter | None = None,
-                 detector=None, ref_frames=30, ref_tol_m=0.003, led_patch_px=3, size_tol=0.25, ref_size_m=None):
+                 detector=None, ref_frames=30, ref_tol_m=0.003, led_patch_px=3, size_tol=0.25, ref_size_m=None,
+                 led_mode="auto", camera_height_m=None, ref_shape_tol=0.05):
+        """led_mode: 'auto' (decided on the frame that completes the homography fit), 'chroma' or 'luma'.
+        camera_height_m: camera above the marker plane, for the LED-height correction when there are no
+        intrinsics. ref_shape_tol: relative side / squareness error of a reference marker that raises a warning."""
         self.ref_world = {int(k): tuple(v) for k, v in ref_world.items()}
         if len(self.ref_world) < 4:
             raise ValueError("need at least 4 reference markers")
@@ -94,13 +130,22 @@ class Tracker:
         self.det = detector or make_detector()
         self.ref_frames, self.ref_tol, self.patch, self.size_tol = ref_frames, ref_tol_m, led_patch_px, size_tol
         self.ref_size_m = ref_size_m
-        self.H = self.Hinv = None
+        self.ref_shape_tol = ref_shape_tol
+        self.led_mode = led_mode
+        self.camera_height_m = camera_height_m
+        self.H = self.Hinv = None           # published last in _fit_h: other threads wait for H (see __main__)
+        self._H = self._Hinv = None         # used while the fit is still being checked
+        self._pose = None                   # (K, R, t) of the camera, world (marker plane z = 0) -> camera
+        self._nadir = None
+        self._led_height_warned = False
         self._buf = []
         self.warnings = []
+        self.ref_off_frames = {}            # reference id -> frames it was off by more than ref_tol
         self.reproj_rms_m = float("nan")
+        self.ref_check = {}
 
     # ------------------------------------------------------------------ homography
-    def _fit_h(self):
+    def _fit_h(self, img=None):
         ids = sorted(self.ref_world)
         src = np.median(np.array([[b[i][0] for i in ids] for b in self._buf]), axis=0)
         dst = np.array([self.ref_world[i] for i in ids], float)
@@ -113,15 +158,93 @@ class Tracker:
             raise FrameHandednessError(
                 "reference-marker coordinates form a mirrored (left-handed) frame: omega would change sign. "
                 "Swap x and y or negate one axis in reference_markers.")
-        self.H, self.Hinv = H, np.linalg.inv(H)
-        proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), H).reshape(-1, 2)
-        self.reproj_rms_m = float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1))))
-        sides = [np.mean(np.linalg.norm(np.roll(c4, -1, 0) - c4, axis=1)) for c4 in
-                 (cv2.perspectiveTransform(c.reshape(-1, 1, 2), H).reshape(4, 2) for c in corners)]
+        self._H, self._Hinv = H, np.linalg.inv(H)
+        proj =cv2.perspectiveTransform(src.reshape(-1, 1, 2), H).reshape(-1, 2)
+        # 4 points: exact solve, the residual is 0 by construction and says nothing about the survey
+        self.reproj_rms_m = (float(np.sqrt(np.mean(np.sum((proj - dst) ** 2, axis=1)))) if len(ids) > 4
+                             else float("nan"))
+        w4s = [cv2.perspectiveTransform(c.reshape(-1, 1, 2), H).reshape(4, 2) for c in corners]
+        sides = [np.mean(np.linalg.norm(np.roll(c4, -1, 0) - c4, axis=1)) for c4 in w4s]
         self.ref_side_m = float(np.median(sides))
+        sides_px = [float(np.mean(np.linalg.norm(np.roll(c, -1, 0) - c, axis=1))) for c in corners]
+        for i, c4, side_px, s in zip(ids, w4s, sides_px, sides):
+            e = np.linalg.norm(np.roll(c4, -1, 0) - c4, axis=1)
+            d1, d2 = np.linalg.norm(c4[2] - c4[0]), np.linalg.norm(c4[3] - c4[1])
+            chk = {"side_m": float(s), "side_err": float(s / self.ref_side_m - 1),   # vs the other references
+                   "aspect_err": float(abs((e[0] + e[2]) / (e[1] + e[3]) - 1)),
+                   "diag_err": float(abs(d1 - d2) / (0.5 * (d1 + d2))),
+                   "tol": float(max(self.ref_shape_tol, 2.0 / side_px))}             # ~2 px of corner error
+            self.ref_check[i] = chk
+        bad = [i for i, c in self.ref_check.items()
+               if max(abs(c["side_err"]), c["aspect_err"], c["diag_err"]) > c["tol"]]
+        if bad:                                 # one wrong centre warps the whole fit, so name no single culprit
+            self.warnings.append((None, f"reference markers {bad} are distorted in the fitted frame "
+                                        f"({self.reference_summary()}): a surveyed reference position is probably "
+                                        "wrong (mistyped, swapped ids, or not at marker height)"))
+        if self.ref_size_m:
+            self.ref_size_err = float(self.ref_side_m / self.ref_size_m - 1)
+            if abs(self.ref_size_err) > max(0.1, 3.0 / float(np.median(sides_px))):
+                self.warnings.append((None, f"reference markers measure {self.ref_side_m * 1000:.1f} mm in the fitted "
+                                            f"frame, not {self.ref_size_m * 1000:.1f} mm: check reference_size_m and "
+                                            "the units of the surveyed positions"))
+        if self.und.K is not None:
+            self._pose = self._camera_pose()
+        if img is not None:
+            h, w = img.shape[:2]
+            centre = self.und.undistort(np.array([[0.5 * (w - 1), 0.5 * (h - 1)]]))
+            self._nadir = self.to_world(centre)[0]
+            if self.led_mode == "auto":
+                self.led_mode = led_mode_of(img)
+                if self.led_mode == "luma":
+                    self.warnings.append((None, "mono camera: sync LED logged as patch brightness in led_b "
+                                                "(led_r = NaN; red low-battery flashes look like sync flashes)"))
+        self.H, self.Hinv = self._H, self._Hinv  # publish last: the fit, its checks and led_mode are complete
+
+    def _camera_pose(self):
+        """Camera pose from H and K: H^-1 ~ K [r1 r2 t] (world z towards the camera in a right-handed frame)."""
+        K = np.asarray(self.und.K, float)
+        M = np.linalg.inv(K) @ self._Hinv
+        M = M / (0.5 * (np.linalg.norm(M[:, 0]) + np.linalg.norm(M[:, 1])))
+        if M[2, 2] < 0:                                     # the world origin lies in front of the camera
+            M = -M
+        U, _, Vt = np.linalg.svd(np.c_[M[:, 0], M[:, 1], np.cross(M[:, 0], M[:, 1])])
+        R, t = U @ Vt, M[:, 2]
+        if (-R.T @ t)[2] <= 0:                              # camera must be above the marker plane
+            self.warnings.append((None, "camera pose from H and K is not above the plane: LED height ignored"))
+            return None
+        return K, R, t
+
+    def reference_summary(self):
+        """One line on the reference fit, for the operator (the 4-point RMS is not a check, see the module doc)."""
+        if not self.ref_check:
+            return "homography not fitted"
+        worst = max(self.ref_check.items(), key=lambda kv: max(abs(kv[1]["side_err"]), kv[1]["aspect_err"],
+                                                                  kv[1]["diag_err"]) / kv[1]["tol"])
+        rms = ("exact 4-point fit, no residual" if not np.isfinite(self.reproj_rms_m)
+               else f"reprojection RMS {self.reproj_rms_m * 1000:.2f} mm")
+        c = worst[1]
+        size = (f"; side {self.ref_side_m * 1000:.1f} mm vs reference_size_m {self.ref_size_m * 1000:.1f} mm"
+                if self.ref_size_m else "")
+        return (f"{rms}; reference marker shapes: worst id {worst[0]} side {c['side_err']:+.1%} vs the others, "
+                f"aspect {c['aspect_err']:.1%}, diagonals {c['diag_err']:.1%} (tolerance {c['tol']:.1%}){size}")
 
     def to_world(self, pts_und):
-        return cv2.perspectiveTransform(np.asarray(pts_und, np.float64).reshape(-1, 1, 2), self.H).reshape(-1, 2)
+        return cv2.perspectiveTransform(np.asarray(pts_und, np.float64).reshape(-1, 1, 2), self._H).reshape(-1, 2)
+
+    def led_pixel_undistorted(self, pw, dz=0.0):
+        """Undistorted pixel of the world point pw (marker-plane x, y) raised by dz above the marker plane."""
+        pw = np.asarray(pw, float)
+        if dz and self._pose is not None:
+            K, R, t = self._pose
+            pc = K @ (R @ np.array([pw[0], pw[1], dz]) + t)
+            return (pc[:2] / pc[2]).reshape(1, 2)
+        if dz and self.camera_height_m and self._nadir is not None:
+            hc = float(self.camera_height_m)            # ray through the raised point meets the plane here
+            pw = self._nadir + (pw - self._nadir) * hc / (hc - dz)
+        elif dz and not self._led_height_warned:
+            self._led_height_warned = True
+            self.warnings.append((None, "led_height ignored: needs camera intrinsics or camera_height_m"))
+        return cv2.perspectiveTransform(pw.reshape(1, 1, 2), self._Hinv).reshape(1, 2)
 
     # ------------------------------------------------------------------ per frame
     def process(self, img_bgr, t, frame_idx):
@@ -135,12 +258,15 @@ class Tracker:
             if len(seen_ref) == len(self.ref_world):
                 self._buf.append({i: (und[i].mean(axis=0), und[i]) for i in self.ref_world})
             if len(self._buf) >= self.ref_frames:
-                self._fit_h()
+                self._fit_h(img_bgr)
             return []
         for i in seen_ref:                                      # watch the references
             err = np.linalg.norm(self.to_world(und[i].mean(axis=0))[0] - np.array(self.ref_world[i]))
-            if err > self.ref_tol:
-                self.warnings.append((t, f"reference {i} off by {err * 1000:.1f} mm (rig bumped?)"))
+            if err > self.ref_tol:                              # warn on the first frame, then every REF_WARN_EVERY
+                n = self.ref_off_frames[i] = self.ref_off_frames.get(i, 0) + 1
+                if n % REF_WARN_EVERY == 1 or REF_WARN_EVERY == 1:
+                    self.warnings.append((t, f"reference {i} off by {err * 1000:.1f} mm (rig bumped?; "
+                                             f"{n} frames so far)"))
         out = []
         for i, c in und.items():
             if i in self.ref_world:
@@ -161,11 +287,13 @@ class Tracker:
                 u = up / (np.linalg.norm(up) + 1e-12)
                 left = np.array([-u[1], u[0]])
                 pw = centre + bm.led_offset[0] * u + bm.led_offset[1] * left
-                pu = cv2.perspectiveTransform(pw.reshape(1, 1, 2), self.Hinv).reshape(1, 2)
+                pu = self.led_pixel_undistorted(pw, getattr(bm, "led_height", 0.0))
                 px, py = self.und.distort(pu)[0]
                 x0, y0, r = int(round(px)), int(round(py)), self.patch
                 patch = img_bgr[max(y0 - r, 0):y0 + r + 1, max(x0 - r, 0):x0 + r + 1]
-                if patch.size and img_bgr.ndim == 3:
+                if patch.size and (self.led_mode == "luma" or img_bgr.ndim == 2):
+                    led_b = float(np.mean(patch.astype(np.float32)))    # brightness: the only signal in mono
+                elif patch.size:
                     b, g, r_ = (patch[..., k].astype(np.float32) for k in range(3))
                     led_b = float(np.mean(b - 0.5 * (g + r_)))       # chroma: ~0 on grey/white backgrounds
                     led_r = float(np.mean(r_ - 0.5 * (g + b)))

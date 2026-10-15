@@ -41,7 +41,10 @@ class BotGeometry:
     """Where the ArUco marker sits on the bot, measured per bot (FEASIBILITY.md 3.3, marker placement).
 
     marker_offset: marker centre in the body frame relative to the body reference point [m].
-    marker_yaw:    marker +x edge (corner 0 -> 1) direction minus the body +x direction [rad].
+    marker_yaw:    marker heading minus the body +x (forward) direction [rad]. The marker heading is the tracker's
+                   theta: the marker's 'up' direction, bottom edge -> top edge of the printed marker (corner 0 -> 1,
+                   the top edge, rotated +90 deg). A marker glued with its top edge towards the bot's front has
+                   marker_yaw = 0.
     The body reference point is whatever point you define (e.g. the ellipse centre); report it with the map.
     """
     marker_id: int

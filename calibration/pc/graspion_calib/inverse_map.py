@@ -26,15 +26,28 @@ from scipy.spatial import ConvexHull
 from .forward_map import PowerLawMap
 
 
+P_MIN_DEFAULT = 60.0      # lowest drive of the operating region unless the dead zone reaches it
+P0_MARGIN = 5.0           # automatic p_min keeps this far above p0 (f ~ (p - p0)^gamma is steep just above p0)
+
+
 class InverseMap:
-    def __init__(self, fwd: PowerLawMap, p_min=(60.0, 60.0), p_max=(120.0, 120.0), v_bat=None, scale=(0.005, 0.1)):
+    def __init__(self, fwd: PowerLawMap, p_min=None, p_max=(120.0, 120.0), v_bat=None, scale=(0.005, 0.1)):
+        """p_min=None: per motor max(60, p0 + 5), so a bot whose dead zone reaches 60 still gets an inverse.
+        v_bat=None with a 'bat' map: evaluate at fwd.meta['v_bat_median'] (else fwd.v_ref)."""
         self.fwd = fwd
-        self.p_min = np.asarray(p_min, float)
+        p0 = np.asarray(fwd.p0, float)
+        self.p_min_auto = p_min is None
+        self.p_min = np.maximum(P_MIN_DEFAULT, p0 + P0_MARGIN) if p_min is None else np.asarray(p_min, float)
         self.p_max = np.asarray(p_max, float)
+        if v_bat is None and fwd.features == "bat":
+            v_bat = float(fwd.meta.get("v_bat_median", fwd.v_ref))
         self.v_bat = v_bat
         self.scale = np.asarray(scale, float)
-        if np.any(self.p_min <= np.asarray(fwd.p0)):
-            raise ValueError("p_min must be above the dead zone p0")
+        if np.any(self.p_min <= p0):
+            raise ValueError(f"p_min {self.p_min.tolist()} must be above the dead zone p0 {p0.tolist()}")
+        if np.any(self.p_min >= self.p_max):
+            raise ValueError(f"no operating region: p_min {self.p_min.tolist()} >= p_max {self.p_max.tolist()} "
+                             f"(dead zone p0 {p0.tolist()})")
         self.f_min = (self.p_min - np.asarray(fwd.p0)) ** np.asarray(fwd.gamma)
         self.f_max = (self.p_max - np.asarray(fwd.p0)) ** np.asarray(fwd.gamma)
         self.linear = fwd.features in ("lin", "cor")
@@ -140,7 +153,8 @@ class InverseMap:
 
     # ------------------------------------------------------------------ export
     def to_dict(self):
-        d = {"forward": self.fwd.to_dict(), "p_min": self.p_min.tolist(), "p_max": self.p_max.tolist(),
+        d = {"forward": self.fwd.to_dict(), "p_min": self.p_min.tolist(), "p_min_auto": self.p_min_auto,
+             "p_max": self.p_max.tolist(),
              "f_min": self.f_min.tolist(), "f_max": self.f_max.tolist(), "v_bat": self.v_bat,
              "polytope": {"H": self.H.tolist(), "h": self.h.tolist(), "vertices": self.vertices.tolist(),
                           "variables": ["v (m/s)", "omega (rad/s)"], "convex_image": self.convex_image},

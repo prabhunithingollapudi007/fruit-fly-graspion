@@ -14,17 +14,18 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import least_squares
 
-from .twist import body_velocity, resample_uniform, uniform_chunks
+from .twist import body_velocity, clean_heading, resample_uniform, uniform_chunks
 
 
 def second_difference_msd(runs, max_lag_s=1.0, min_count=20):
     """Pool S(tau) over runs. runs: iterable of (t, th) arrays (each may contain gaps).
 
-    Returns (tau [s], S [rad^2], counts)."""
+    Returns (tau [s], S [rad^2], counts). Heading spikes (e.g. a pi-flipped detection) are dropped before
+    unwrapping, as in the twist fit: one 2 pi unwrap step would add (2 pi)^2 to every window across it and
+    read as ~10x the true D_r."""
     sums, counts, dt_ref = {}, {}, None
     for t, th in runs:
-        t = np.asarray(t, float)
-        th = np.unwrap(np.asarray(th, float))
+        t, th = clean_heading(t, th)
         dt, chunks = uniform_chunks(t)
         if not chunks:
             continue
@@ -87,10 +88,13 @@ def heading_diffusion(runs, max_lag_s=1.0, ou=False):
 
 
 def static_noise(t, x, y, th):
-    """Measurement noise of a stationary marker (60 s static run): SD of x, y, theta and of frame-to-frame steps."""
-    th = np.unwrap(np.asarray(th, float))
-    x, y = np.asarray(x, float), np.asarray(y, float)
+    """Measurement noise of a stationary marker (60 s static run): SD of x, y, theta and of frame-to-frame steps.
+
+    Heading spikes (flipped detections) are dropped and counted in n_spikes, not folded into the SDs."""
+    n_in = len(np.asarray(t))
+    t, th, x, y = clean_heading(t, th, x, y)
     return {"sd_x": float(np.std(x)), "sd_y": float(np.std(y)), "sd_th": float(np.std(th)),
+            "n_spikes": int(n_in - len(t)),
             "sd_dx_step": float(np.std(np.diff(x)) / np.sqrt(2)), "sd_dy_step": float(np.std(np.diff(y)) / np.sqrt(2)),
             "sd_dth_step": float(np.std(np.diff(th)) / np.sqrt(2)), "n": int(len(x)),
             "drift_x": float(x[-1] - x[0]), "drift_y": float(y[-1] - y[0])}

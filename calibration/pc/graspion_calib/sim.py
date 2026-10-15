@@ -6,9 +6,11 @@ Pieces, each mirroring the real one closely enough to exercise the pipeline end 
   SimPlant     EllipticalBot2D kinematics (tilemat_control_stack Ellipse2dObj.py: rotation about a CoR offset
                laterally from the CoM by d_cw / d_ccw, plus translation along the heading), driven by a
                dead-zone power-law truth map with dead time, first-order lag and heading diffusion
-  SimWorld     physics at 2 ms, the shared IR channel (68 ms frames, random loss) and a camera with latency,
-               noise, dropouts and the sync-LED brightness
-  SimBridge    the SerialBridge API on top of SimWorld
+  SimWorld     physics at 2 ms, the shared IR channel (frames of 50-86 ms, payload-dependent: bridge.nec_frame_s;
+               handled decode_delay = RECORD_GAP_S + one loop() pass after the frame ends; random loss; frames
+               closer than RECORD_GAP_S are both lost) and a camera with latency, noise, dropouts and the sync-LED
+               brightness
+  SimBridge    the SerialBridge API on top of SimWorld (period limits of ir_blaster.ino)
 
 Ground truth for the tests: the truth map outputs (v, u2, omega) where v is EllipticalBot2D's translational
 speed; the CoM body twist is then (v + d |omega|, u2, omega) with d = d_ccw if omega > 0 else d_cw.
@@ -23,12 +25,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import protocol as P
-from .bridge import SendRecord
+from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, RECORD_GAP_S, BridgeError, SendRecord, nec_frame_s
 from .forward_map import PowerLawMap
 from .geometry import BotGeometry, transfer_twist, wrap
 from .poses import Detection, PoseStore
-
-NEC_FRAME_S = 0.0675
 
 
 def default_truth() -> PowerLawMap:
@@ -54,7 +54,7 @@ class SimParams:
     th_noise: float = 0.004
     p_drop: float = 0.01
     ir_loss: float = 0.02
-    decode_delay: float = 0.005
+    decode_delay: float = RECORD_GAP_S + 0.0005   # frame end -> handleFrame: IRremote's end-of-frame silence + loop()
     usb_latency: float = 0.002
     v_bat0: float = 4.05
     v_drain: float = 2.5e-4                  # V per second at full drive on both motors
@@ -69,7 +69,16 @@ class SimParams:
 
 
 class SimFirmware:
-    """Frame semantics of calib_bot.ino. Times in host seconds; the log uses the drifting bot clock (ms)."""
+    """Frame semantics of calib_bot.ino. Times in host seconds; the log uses the drifting bot clock (ms).
+
+    Only frames that command the drive (STOP, SEG, DRIVE inside a segment, RECENTRE) feed the command watchdog;
+    a DRIVE without an open segment stops the motors. The firmware's SysTick deadman and hardware watchdog only
+    act when loop() stalls, which the simulated firmware never does, so they are not modelled.
+
+    i2c_ok = False mirrors an I2C bus that stayed held LOW (firmware `i2cOk`; the firmware retries the recovery
+    about once per second, which is not modelled): no battery reads, so no low-battery latch, and every SEG is
+    answered with a red flash and no segment or log record.
+    """
 
     def __init__(self, bot_id, p: SimParams, plant):
         self.id, self.p, self.plant = bot_id, p, plant
@@ -78,6 +87,7 @@ class SimFirmware:
         self.rec = None
         self.log = []
         self.last_frame = -1e9
+        self.i2c_ok = True
         self.lowbat = False
         self.low_count = 0
         self.flash_until = -1.0
@@ -118,17 +128,22 @@ class SimFirmware:
             self.stats["other_addr"] += 1
             return
         self.stats["rx_ok"] += 1
-        self.last_frame = t
         if self.lowbat:
             self._set(0, 0, t)
             if f.op not in (P.OP_STOP, P.OP_DRIVE):
                 self._flash(t, red=True)
             return
         if f.op == P.OP_STOP:
+            self.last_frame = t
             self._close(3, t)
             self._set(0, 0, t)
         elif f.op == P.OP_SEG:
+            self.last_frame = t
             self._close(1, t)
+            if not self.i2c_ok:                  # no low-battery abort possible: never a segment, red flash
+                self._set(0, 0, t)
+                self._flash(t, red=True)
+                return
             self._set(f.L, f.R, t)
             self.seg_active = True
             self.rec = {"kind": 1, "t_start_ms": self.bot_ms(t), "t_end_ms": self.bot_ms(t), "L": self.L, "R": self.R,
@@ -136,19 +151,29 @@ class SimFirmware:
             self.log.append(self.rec)
             self._flash(t)
         elif f.op == P.OP_DRIVE:
-            if not self.seg_active:
+            if not self.seg_active:              # SEG missed or segment ended: stop, never unlogged motion
                 self.stats["drive_no_seg"] += 1
+                self._set(0, 0, t)
                 return
+            self.last_frame = t
             if self.rec is not None:
                 self.rec["n_frames"] += 1
             self._set(f.L, f.R, t)
         elif f.op == P.OP_RECENTRE:
+            self.last_frame = t
             self._close(2, t)
             self._set(f.L, f.R, t)
-        elif f.op == P.OP_PING:
-            self.log.append({"kind": 2, "t_start_ms": self.bot_ms(t), "t_end_ms": self.bot_ms(t), "L": self.L,
-                             "R": self.R, "end_reason": 6, "n_frames": 1,
-                             "mv_rest": int(1000 * self.plant.battery(loaded=False))})
+        elif f.op == P.OP_PING:                  # no watchdog feed; a run of PINGs shares one record
+            last = self.log[-1] if self.log else None
+            if self.rec is not None:
+                self.rec["n_frames"] += 1
+            elif last is not None and last["kind"] == 2 and last["n_frames"] < 0xFFFF:
+                last["n_frames"] += 1
+                last["t_end_ms"] = self.bot_ms(t)
+            else:
+                self.log.append({"kind": 2, "t_start_ms": self.bot_ms(t), "t_end_ms": self.bot_ms(t), "L": self.L,
+                                 "R": self.R, "end_reason": 6, "n_frames": 1,
+                                 "mv_rest": int(1000 * self.plant.battery(loaded=False))})
             self._flash(t)
 
     def tick(self, t):
@@ -157,7 +182,7 @@ class SimFirmware:
             self._close(4, t)
             self._set(0, 0, t)
             self.stats["wd_trips"] += 1
-        if t >= self._next_pwr:
+        if t >= self._next_pwr and self.i2c_ok:
             self._next_pwr = t + (0.2 if moving else 1.0)
             v = self.plant.battery(loaded=moving)
             if v < self.p.mvbat_abort:
@@ -179,7 +204,10 @@ class SimFirmware:
 
     def dump_text(self):
         """The log in calib_bot's USB dump format ('d'), so botlog.py can be tested without a bot."""
-        lines = [f"# I fw=sim proto=1 id={self.id} id_override=0 serial=SIM pwm_hz=sim drive_max={self.p.drive_max}",
+        lines = [f"# I fw=sim proto={P.PROTO_VERSION} id={self.id} id_override=0 serial=SIM pwm_hz=sim "
+                 f"drive_max={self.p.drive_max} watchdog_ms={round(self.p.watchdog_s * 1000)} "
+                 f"mvbat_abort={round(self.p.mvbat_abort * 1000)} i2c={int(self.i2c_ok)} lowbat={int(self.lowbat)} "
+                 f"nrec={len(self.log)}",
                  "# S " + " ".join(f"{k}={v}" for k, v in self.stats.items()), self.DUMP_COLUMNS]
         for r in self.log:
             mv = r.get("mv_rest", 0)
@@ -275,18 +303,32 @@ class SimWorld:
         self.rows = []
         self.keep_rows = tracker_csv is None
         self.occluded = set()                 # marker ids hidden from the camera (tests of the PC-side stop)
+        self._last_tx = None                  # latest frame on the IR channel: {"t0", "t1", "lost"}
+        self.collisions = 0                   # frames lost because another frame came within RECORD_GAP_S
 
     def schedule(self, t, fn):
         self._seq += 1
         heapq.heappush(self.events, (t, self._seq, fn))
 
     def transmit(self, raw, t_start):
-        t_dec = t_start + NEC_FRAME_S
+        """One frame on the shared IR channel, decoded decode_delay after its last mark (bridge.nec_frame_s).
+        IRremote ends a received frame only after RECORD_GAP_S of silence, so two frames that overlap or leave a
+        shorter gap merge into one record that overflows the receive buffer: both are lost, for every bot. Call it
+        no later than t_start (SimBridge does), so the earlier frame's decode is still pending."""
+        t_end = t_start + nec_frame_s(raw)
+        tx = {"t0": t_start, "t1": t_end, "lost": False}
+        prev = self._last_tx
+        if prev is not None and t_start < prev["t1"] + RECORD_GAP_S and prev["t0"] < t_end + RECORD_GAP_S:
+            self.collisions += (not prev["lost"]) + 1
+            tx["lost"] = prev["lost"] = True
+        if prev is None or t_end >= prev["t1"]:
+            self._last_tx = tx
         for bid, fw in self.fw.items():
             p = self.params[bid]
             if self.rng.random() < p.ir_loss:
                 continue
-            self.schedule(t_dec + p.decode_delay, lambda t, fw=fw: fw.on_frame(raw, t))
+            self.schedule(t_end + p.decode_delay,
+                          lambda t, fw=fw, tx=tx: None if tx["lost"] else fw.on_frame(raw, t))
 
     def _camera(self, t):
         while t >= self._next_exp:
@@ -342,16 +384,20 @@ class SimWorld:
 
 
 class SimBridge:
-    """SerialBridge API on the simulated IR channel."""
+    """SerialBridge API on the simulated IR channel. Like ir_blaster.ino it spaces frame starts by the period and
+    replies once the frame has left the LED (t_ack, blaster_t1_ms = frame end)."""
 
     def __init__(self, world: SimWorld, period_ms=110, usb_latency=0.002):
         self.world = world
-        self.period_s = period_ms / 1000.0
         self.usb = usb_latency
         self._last_start = -1e9
-        self.info = "I sim_blaster proto=1"
+        self.info = f"I sim_blaster proto={P.PROTO_VERSION}"
+        self.set_period(period_ms)
 
     def set_period(self, period_ms):
+        period_ms = int(period_ms)
+        if not PERIOD_MIN_MS <= period_ms <= PERIOD_MAX_MS:     # ir_blaster.ino answers "E range"
+            raise BridgeError(f"blaster period {period_ms} ms outside {PERIOD_MIN_MS}..{PERIOD_MAX_MS} ms")
         self.period_s = period_ms / 1000.0
 
     def send(self, raw: int, check=True) -> SendRecord:
@@ -360,11 +406,12 @@ class SimBridge:
         w = self.world
         t_req = w.t
         t_start = max(t_req + self.usb / 2, self._last_start + self.period_s)
+        t_end = t_start + nec_frame_s(raw)
         w.advance(t_start)
         self._last_start = t_start
         w.transmit(raw, t_start)
-        w.advance(t_start + NEC_FRAME_S + self.usb / 2)
-        return SendRecord(t_req, w.t, raw, int(t_start * 1000), int((t_start + NEC_FRAME_S) * 1000))
+        w.advance(t_end + self.usb / 2)
+        return SendRecord(t_req, w.t, raw, int(t_start * 1000), int(t_end * 1000))
 
     def close(self):
         pass

@@ -13,7 +13,7 @@ import unittest
 import numpy as np
 
 from graspion_calib.geometry import BotGeometry, icr_body, transfer_twist
-from graspion_calib.twist import fit_twist
+from graspion_calib.twist import body_velocity, fit_twist, heading_spikes
 
 D_COR = (0.0145, 0.0161)
 
@@ -95,6 +95,34 @@ class TestTwist(unittest.TestCase):
         f = fit_twist(t, x2, y, th2)
         self.assertGreaterEqual(f["n_rejected"], 2)
         self.assertAlmostEqual(f["u1"], 0.07 + D_COR[1] * 0.5, delta=1.5e-3)
+
+    def test_heading_spikes_vectorised(self):
+        """The cumulative-sum heading_spikes flags exactly what the per-sample loop it replaced flagged."""
+        def loop(th, k=2, thresh=0.5):
+            n = len(th)
+            c, s = np.cos(th), np.sin(th)
+            bad = np.zeros(n, bool)
+            for i in range(n):
+                lo, hi = max(0, i - k), min(n, i + k + 1)
+                cs, ss = c[lo:hi].sum() - c[i], s[lo:hi].sum() - s[i]
+                if hi - lo > 1:
+                    bad[i] = abs(np.angle(np.exp(1j * (th[i] - np.arctan2(ss, cs))))) > thresh
+            return bad
+        rng = np.random.default_rng(1)
+        for n in (1, 2, 3, 7, 200):
+            th = np.cumsum(rng.normal(0.05, 0.02, n))
+            th[rng.random(n) < 0.05] += math.pi
+            th = np.mod(th + math.pi, 2 * math.pi) - math.pi
+            np.testing.assert_array_equal(heading_spikes(th), loop(th))
+
+    def test_velocity_series_ignores_pi_flip(self):
+        """body_velocity (early-stop detection) used to unwrap a flip into a ~2 pi / dt omega spike."""
+        t, x, y, th = elliptical_bot_path(0.06, 2.0, seed=7)
+        th = th.copy()
+        th[100] += math.pi
+        tv, u1, u2, w, _ = body_velocity(t, x, y, np.mod(th + math.pi, 2 * math.pi) - math.pi)
+        self.assertLess(np.max(np.abs(w - 2.0)), 1.0)                     # SG noise ~0.4; the spike was ~60
+        self.assertLess(np.max(np.abs(u1 - (0.06 + D_COR[1] * 2.0))), 0.03)
 
     @unittest.skipUnless(os.environ.get("GRASPION_TILEMAT_SIM"), "set GRASPION_TILEMAT_SIM to run the user's plant")
     def test_users_elliptical_bot2d(self):

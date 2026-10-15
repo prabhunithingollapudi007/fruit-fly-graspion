@@ -1,11 +1,13 @@
-"""Helpers: run a scheduler session against the simulated rig."""
+"""Helpers: run a scheduler session against the simulated rig; fake blaster and bot serial ports."""
+import types
 from pathlib import Path
 
+from graspion_calib import protocol as P
 from graspion_calib import sim
 from graspion_calib.clock import SimClock
 from graspion_calib.geometry import Arena
 from graspion_calib.poses import TrackerCSV
-from graspion_calib.scheduler import Session, SessionConfig
+from graspion_calib.scheduler import RecentreConfig, SafetyConfig, Session, SessionConfig
 
 BOT = 90
 
@@ -19,13 +21,15 @@ abort_on_pause.messages = []
 
 
 def run_session(out, specs, params=None, start=(0.45, 0.5, 0.3), arena=None, seed=0, bridge_factory=None,
-                on_pause=abort_on_pause, write_dump=True):
+                on_pause=abort_on_pause, write_dump=True, geometry=None, safety=None, recentre=None):
+    """geometry: what the PC believes about the marker (default: the simulated bot's true geometry)."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     p = params or sim.SimParams()
     world = sim.SimWorld({BOT: (p, start)}, seed=seed, tracker_csv=TrackerCSV(out / "tracker.csv"))
     bridge = (bridge_factory or sim.SimBridge)(world)
-    cfg = SessionConfig(BOT, p.geometry, arena or Arena(0.0, 1.0, 0.0, 1.0, 0.08), str(out))
+    cfg = SessionConfig(BOT, geometry or p.geometry, arena or Arena(0.0, 1.0, 0.0, 1.0, 0.08), str(out),
+                        safety=safety or SafetyConfig(), recentre=recentre or RecentreConfig())
     sess = Session(cfg, bridge, world.poses, SimClock(world), on_pause=on_pause, extra_meta={"pwm_hz": "sim"})
     try:
         counts = sess.run(specs)
@@ -34,3 +38,137 @@ def run_session(out, specs, params=None, start=(0.45, 0.5, 0.3), arena=None, see
     if write_dump:
         (out / "bot_dump.csv").write_text(world.fw[BOT].dump_text())
     return world, counts
+
+
+class FakeBlasterSerial:
+    """The serial side of ir_blaster.ino on the simulated IR channel, for graspion_calib.bridge.SerialBridge(ser=...).
+
+    A request is handled as soon as its line is complete (the frame goes out on the simulated channel, the reply
+    is queued); a CAN byte drops the partial line. interrupt_at=n raises KeyboardInterrupt in the n-th readline
+    after consuming `consume` bytes of the queued reply: 0 is a Ctrl-C before the reply arrived, more is one in
+    the middle of it. proto: what 'V' reports (another value impersonates a build of another protocol version).
+
+    It is a Python model of the sketch's line handling, kept in step with it by hand: tests against it pin the
+    PC side and the intended blaster behaviour, not the C code, which is checked only by compiling it.
+    """
+    LINE_MAX = 47                                    # ir_blaster.ino: char line[48]
+    CANCEL = b"\x18"                                 # ir_blaster.ino LINE_CANCEL
+
+    def __init__(self, world, interrupt_at=None, consume=0, proto=P.PROTO_VERSION):
+        self.sim = sim.SimBridge(world)
+        self.rx, self._line, self._drop = b"", b"", False
+        self.sent = []                               # every raw frame handed to the IR channel
+        self.lines = []                              # every complete request line, as handled
+        self.interrupt_at, self.consume, self.n_read = interrupt_at, consume, 0
+        self.proto = proto
+        self.timeout = 1.0
+        self.closed = False
+
+    def _reply(self, text):
+        self.rx += (text + "\r\n").encode("ascii")
+
+    def _send(self, raw):
+        rec = self.sim.send(raw, check=False)
+        self.sent.append(raw)
+        self._reply(f"K {raw:08X} {rec.blaster_t0_ms} {rec.blaster_t1_ms}")
+
+    def _handle(self, s):
+        self.lines.append(s)
+        if not s:
+            return
+        cmd, arg = s[0], s[1:].strip()
+        try:
+            if cmd in "Ff":
+                raw = int(arg, 16)
+                if cmd == "F" and P.check(raw) != P.OK:
+                    return self._reply("E crc")
+                return self._send(raw)
+            if cmd == "G":
+                ms = int(arg)
+                if not 100 <= ms <= 2000:
+                    return self._reply("E range")
+                self.sim.set_period(ms)
+                return self._reply(f"K G {ms}")
+        except ValueError:
+            return self._reply("E parse")
+        if cmd == "V":
+            return self._reply(f"I sim_blaster proto={self.proto} pin=3 period_ms={round(self.sim.period_s * 1000)}")
+        if cmd == "P":
+            return self._reply("K P 0")
+        self._reply("E ?")
+
+    def write(self, data):
+        for c in data:
+            c = bytes([c])
+            if c == b"\n":
+                if self._drop:
+                    self._reply("E long")
+                else:
+                    self._handle(self._line.decode("ascii"))
+                self._line, self._drop = b"", False
+            elif c == self.CANCEL:
+                self._line, self._drop = b"", False
+            elif c != b"\r" and not self._drop:
+                if len(self._line) < self.LINE_MAX:
+                    self._line += c
+                else:
+                    self._drop = True
+        return len(data)
+
+    def readline(self):
+        self.n_read += 1
+        if self.n_read == self.interrupt_at:
+            self.rx = self.rx[self.consume:]
+            raise KeyboardInterrupt
+        i = self.rx.find(b"\n")
+        if i < 0:                                    # timeout: return what there is, like pyserial
+            line, self.rx = self.rx, b""
+            return line
+        line, self.rx = self.rx[:i + 1], self.rx[i + 1:]
+        return line
+
+    def reset_input_buffer(self):
+        self.rx = b""
+
+    def close(self):
+        self.closed = True
+
+
+SERIAL = "0123456789ABCDEF00112233DEADBEEF"     # a USB iSerial string; its ID is P.bot_id_from_usb_serial(SERIAL)
+
+
+def bot_info_line(proto=P.PROTO_VERSION, serial=SERIAL):
+    """The bot's 'i' reply in calib_bot.ino's format (queueInfo), abridged."""
+    return (f"I fw=calib_bot/2 proto={proto} id={P.bot_id_from_usb_serial(serial)} id_override=0 serial={serial} "
+            "pwm_hz=732 drive_max=120 watchdog_ms=300 mvbat_abort=3400 hw_wdt=1 bench_hang=0 rcause=0x1 mag=1 "
+            "i2c=1 mvsys=5000 mvbat=3900 lowbat=0 nrec=0 millis=1234")
+
+
+class FakeBotSerial:
+    """pyserial's Serial for a bot on USB, as botlog.read_info_serial uses it: answers 'i' with info_line.
+    serial_module() is a stand-in for the pyserial module (sys.modules['serial'])."""
+
+    def __init__(self, info_line):
+        self.info_line, self.rx = info_line, b""
+
+    def serial_module(self):
+        return types.SimpleNamespace(Serial=lambda *args, **kwargs: self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def reset_input_buffer(self):
+        self.rx = b""
+
+    def write(self, data):
+        if b"i" in data:
+            self.rx += (self.info_line + "\r\n").encode("ascii")
+        return len(data)
+
+    def readline(self):
+        i = self.rx.find(b"\n")
+        line, self.rx = (self.rx, b"") if i < 0 else (self.rx[:i + 1], self.rx[i + 1:])
+        return line

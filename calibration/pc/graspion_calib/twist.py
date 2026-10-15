@@ -28,14 +28,24 @@ def heading_spikes(th, k=2, thresh=0.5):
     rest of the path by 2 pi."""
     th = np.asarray(th, float)
     n = len(th)
-    c, s = np.cos(th), np.sin(th)
-    bad = np.zeros(n, bool)
-    for i in range(n):
-        lo, hi = max(0, i - k), min(n, i + k + 1)
-        cs, ss = c[lo:hi].sum() - c[i], s[lo:hi].sum() - s[i]
-        if hi - lo > 1:
-            bad[i] = abs(np.angle(np.exp(1j * (th[i] - np.arctan2(ss, cs))))) > thresh
-    return bad
+    if n == 0:
+        return np.zeros(0, bool)
+    idx = np.arange(n)
+    lo, hi = np.maximum(0, idx - k), np.minimum(n, idx + k + 1)
+    cum_c, cum_s = np.r_[0.0, np.cumsum(np.cos(th))], np.r_[0.0, np.cumsum(np.sin(th))]
+    cs, ss = cum_c[hi] - cum_c[lo] - np.cos(th), cum_s[hi] - cum_s[lo] - np.sin(th)     # neighbours only
+    dev = np.abs(np.angle(np.exp(1j * (th - np.arctan2(ss, cs)))))
+    return (hi - lo > 1) & (dev > thresh)
+
+
+def clean_heading(t, th, *others):
+    """Drop heading spikes (heading_spikes), then unwrap. Returns (t, th_unwrapped, *others) without the spikes.
+
+    Every heading path (twist fit, velocity series, lag fit, diffusion) goes through this, so one pi flip
+    cannot add a 2 pi step. A dropped sample leaves a 2-frame gap, which uniform_chunks splits at."""
+    bad = heading_spikes(th)
+    return ((np.asarray(t, float)[~bad], np.unwrap(np.asarray(th, float)[~bad]))
+            + tuple(np.asarray(o, float)[~bad] for o in others))
 
 
 def fit_twist(t, x, y, th, reject_k=5.0):
@@ -45,10 +55,9 @@ def fit_twist(t, x, y, th, reject_k=5.0):
     outlier rejection (residual > reject_k * robust scale). Standard errors assume white residuals; tracked
     residuals are autocorrelated, so treat them as lower bounds.
     """
-    spikes = heading_spikes(th)
-    t = np.asarray(t, float)[~spikes]
-    x, y = np.asarray(x, float)[~spikes], np.asarray(y, float)[~spikes]
-    th = np.unwrap(np.asarray(th, float)[~spikes])
+    n_in = len(t)
+    t, th, x, y = clean_heading(t, th, x, y)
+    n_spikes = n_in - len(t)
     keep = np.ones(len(t), bool)
     for it in range(2):
         tt, xx, yy, hh = t[keep] - t[keep][0], x[keep], y[keep], th[keep]
@@ -89,7 +98,7 @@ def fit_twist(t, x, y, th, reject_k=5.0):
     return {"u1": u1, "u2": u2, "omega": float(omega), "se_u1": se_u1, "se_u2": se_u2, "se_omega": se_w,
             "icr_x": icx, "icr_y": icy, "x0": float(sol[0]), "y0": float(sol[1]), "th0": float(th0),
             "pos_rms": float(np.sqrt(np.mean(res ** 2))), "th_rms": float(np.sqrt(np.mean(th_res ** 2))),
-            "n": int(n), "n_rejected": int((~keep).sum() + spikes.sum()), "duration": float(tt[-1]),
+            "n": int(n), "n_rejected": int((~keep).sum() + n_spikes), "duration": float(tt[-1]),
             "t": t[keep], "th_resid": th_res}
 
 
@@ -118,11 +127,10 @@ def body_velocity(t, x, y, th, window_s=0.15, polyorder=2):
     """Body-frame velocity (u1, u2, omega) series by Savitzky-Golay differentiation on gap-free runs.
 
     Returns (t_uniform, u1, u2, omega, window_samples); NaN-free, concatenated over runs. Positions are
-    differentiated in the world frame and rotated with the smoothed heading.
+    differentiated in the world frame and rotated with the smoothed heading. Heading spikes are dropped first.
     """
     out = [[], [], [], []]
-    t = np.asarray(t, float)
-    th = np.unwrap(np.asarray(th, float))
+    t, th, x, y = clean_heading(t, th, x, y)
     dt, runs = uniform_chunks(t)
     win = 0
     for idx in runs:

@@ -17,9 +17,10 @@ class Detection:
     id: int           # ArUco marker id
     x: float          # marker centre, world metres (homography at marker height)
     y: float
-    theta: float      # marker +x edge heading, world frame, rad
-    led_b: float      # mean blue chroma B - (G+R)/2 at the sync-LED spot (-255..255)
-    led_r: float      # mean red chroma R - (G+B)/2 at the same spot
+    theta: float      # marker 'up' heading (bottom edge -> top edge of the printed marker), world frame, rad
+    led_b: float      # mean blue chroma B - (G+R)/2 at the sync-LED spot (-255..255); brightness (0..255) in
+                      # the tracker's 'luma' mode (mono camera)
+    led_r: float      # mean red chroma R - (G+B)/2 at the same spot; NaN in 'luma' mode
     side_m: float     # mean marker side length in metres (sanity check against the printed size)
     n_ref: int        # reference markers visible in this frame
 

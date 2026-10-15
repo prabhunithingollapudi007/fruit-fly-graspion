@@ -1,5 +1,5 @@
 {
-  "_comment": "Example rig config. Every number is a placeholder: survey your own rig. Units: metres, radians.",
+  "_comment": "Example rig config. Every number is a placeholder: survey your own rig. Units: metres, radians. camera.camera_height_m: camera above the marker plane; bots.<id>.led_height: LED height minus marker height (negative below). Both feed the LED-height correction (intrinsics take precedence over camera_height_m).",
   "arena": {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 1.0, "margin": 0.08, "home": null},
   "reference_markers": {
     "0": [0.02, 0.02],
@@ -14,7 +14,8 @@
     "fps": 60,
     "exposure": -9,
     "intrinsics": "camera.npz",
-    "reference_size_m": 0.02
+    "reference_size_m": 0.02,
+    "camera_height_m": 1.0
   },
   "bridge": {"port": "COM5", "period_ms": 110},
   "bots": {
@@ -24,6 +25,7 @@
       "marker_offset": [0.0, 0.0],
       "marker_yaw": 0.0,
       "led_offset": [0.03, 0.0],
+      "led_height": -0.010,
       "reference_point": "marker centre (set marker_offset to use the body centre)"
     }
   }

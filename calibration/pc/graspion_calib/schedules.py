@@ -1,10 +1,14 @@
-"""Calibration schedules (FEASIBILITY.md 5.2 steps 3-7). A schedule is a list of SegmentSpec, saved as JSON.
+"""Calibration schedules (FEASIBILITY.md 5.2 steps 3-7). A schedule is a list of SegmentSpec, saved as JSON
+together with how it was made ({"meta": {"kind", "seed", ...}, "segments": [...]}).
 
-Drive values are on the signed drive scale of the firmware (-120..120, 0 = motor off).
+Drive values are on the signed drive scale of the firmware (-120..120, 0 = motor off). The randomised schedules
+take an explicit seed; the command line draws a fresh one per schedule (new_seed) and records it, so every bot
+and every battery gets its own order and any schedule can be regenerated.
 """
 from __future__ import annotations
 
 import json
+import secrets
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -109,14 +113,28 @@ def validation(targets, inverse_map, duration_s=3.0, rest_s=0.8, reps=2, seed=0)
     return out
 
 
-def save(specs, path):
+def new_seed() -> int:
+    """A fresh 32-bit seed, so the cell order is not repeated across bots and batteries (seed 0 every time would
+    repeat the same order, and with it the same battery and warm-up state per cell, across the whole fleet)."""
+    return secrets.randbits(32)
+
+
+def save(specs, path, meta=None):
     with open(path, "w") as f:
-        json.dump([asdict(s) for s in specs], f, indent=1)
+        json.dump({"meta": meta or {}, "segments": [asdict(s) for s in specs]}, f, indent=1)
+
+
+def load_with_meta(path):
+    """(specs, meta). Older files hold a bare list of segments (meta {})."""
+    with open(path) as f:
+        d = json.load(f)
+    if isinstance(d, list):
+        d = {"meta": {}, "segments": d}
+    return [SegmentSpec(**s) for s in d["segments"]], d.get("meta", {})
 
 
 def load(path):
-    with open(path) as f:
-        return [SegmentSpec(**d) for d in json.load(f)]
+    return load_with_meta(path)[0]
 
 
 def summary(specs, recentre_s=4.0):

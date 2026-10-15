@@ -1,6 +1,7 @@
 """graspion_calib command line. Run from calibration/pc:  python -m graspion_calib <command> --help
 
-  register        read a USB-connected bot's ID / serial / PWM mode ('i') into bots/<id>.json
+  register        read a USB-connected bot's ID / serial / PWM mode ('i') into bots/<id>.json (refuses a bot
+                  built with another IR protocol version)
   dump            download a bot's log ('d') to CSV (copy it into the session folder as bot_dump.csv)
   fleet-check     check bots/*.json for IR-ID collisions
   schedule        write a schedule JSON (grid, steps, prbs, circles, ping, static, validation)
@@ -27,9 +28,59 @@ def _rig(path):
     return RigConfig.load(path)
 
 
+def _make_tracker(rig, bot_cfgs):
+    """Tracker for the rig's references and the given rig-config bot entries (bots.<id>): LED offset and height
+    per bot, camera intrinsics and camera_height_m (both used for the LED-height correction)."""
+    from .tracker import BotMarker, Tracker, Undistorter
+    cam_cfg = rig.camera
+    und = Undistorter.from_npz(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
+    bots = {int(b["marker_id"]): BotMarker(int(b["marker_id"]), tuple(b.get("led_offset", (0.012, 0.0))),
+                                           b.get("marker_size_m", 0.02), float(b.get("led_height") or 0.0))
+            for b in bot_cfgs}
+    return Tracker(rig.reference_markers, bots, und, ref_size_m=cam_cfg.get("reference_size_m"),
+                   camera_height_m=cam_cfg.get("camera_height_m"))
+
+
+def _wait_for_fit(tracker, cam, timeout_s=10.0):
+    """Wait until the camera thread has fitted the homography. Tracker._fit_h publishes H last, after its
+    reference checks, warnings and the led_mode decision."""
+    t0 = time.time()
+    while tracker.H is None:
+        if time.time() - t0 > timeout_s:
+            raise SystemExit("reference markers not all visible: homography not fitted")
+        if cam.error:
+            raise SystemExit(f"camera: {cam.error}")
+        time.sleep(0.1)
+
+
+def _print_tracker_warnings(tracker, start=0, last=5):
+    """Print tracker.warnings[start:]: every one-off warning (t None: reference checks, mono camera, LED height)
+    and the last `last` per-frame ones with their count (a bumped reference warns on every frame). Returns the
+    index to continue from."""
+    n = len(tracker.warnings)                      # the camera thread may still append
+    ws = tracker.warnings[start:n]
+    for t, w in ws:
+        if t is None:
+            print("warning:", w)
+    timed = [w for t, w in ws if t is not None]
+    if len(timed) > last:
+        print(f"{len(timed)} per-frame tracker warnings, the last {last}:")
+    for w in timed[max(0, len(timed) - last):]:
+        print("warning:", w)
+    return n
+
+
+def _print_fit(tracker):
+    print(f"homography fitted: {tracker.reference_summary()}; LED signal: {tracker.led_mode}")
+    return _print_tracker_warnings(tracker)
+
+
 def cmd_register(a):
-    from .botlog import read_info_serial
-    info = read_info_serial(a.port)
+    from . import botlog
+    info = botlog.read_info_serial(a.port)
+    err = P.proto_error(info, f"the bot on {a.port}", "calib_bot")
+    if err:                                       # nothing is written: run would reject the file anyway
+        raise SystemExit(f"{err}, then run register again")
     bid = int(info["id"])
     if info.get("serial") and int(info.get("id_override", "0")) == 0:
         assert P.bot_id_from_usb_serial(info["serial"]) == bid, "firmware and Python ID hashes disagree"
@@ -61,14 +112,15 @@ def cmd_fleet_check(a):
 
 
 def cmd_schedule(a):
+    seed = S.new_seed() if a.seed is None else a.seed
     if a.kind == "grid":
-        specs = S.static_grid(blocks=a.blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=a.seed)
+        specs = S.static_grid(blocks=a.blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=seed)
     elif a.kind == "steps":
         specs = S.steps([((60, 60), (100, 100)), ((80, 0), (80, 80)), ((0, 80), (80, 80)), ((70, 90), (90, 70))],
                         hold_s=a.drive_s / 2)
     elif a.kind == "prbs":
         specs = S.prbs([(70, 70), (100, 100), (90, 60), (60, 90), (0, 90), (90, 0)], duration_s=a.drive_s,
-                       n_segments=a.blocks * 4, seed=a.seed)
+                       n_segments=a.blocks * 4, seed=seed)
     elif a.kind == "circles":
         specs = S.circles(json.loads(a.pairs or "[[100, 60], [60, 100]]"), duration_s=a.long_s)
     elif a.kind == "ping":
@@ -78,25 +130,58 @@ def cmd_schedule(a):
     elif a.kind == "validation":
         from .forward_map import PowerLawMap
         from .inverse_map import InverseMap
-        inv = InverseMap(PowerLawMap.load(a.forward_map))
+        if not a.forward_map:
+            raise SystemExit("schedule validation needs --forward-map")
+        if a.p_min is not None and len(a.p_min) not in (1, 2):
+            raise SystemExit("--p-min takes one value (both motors) or two (L R)")
+        p_min = None if a.p_min is None else (a.p_min * 2)[:2]
+        try:
+            inv = InverseMap(PowerLawMap.load(a.forward_map), p_min=p_min, v_bat=a.v_bat)
+        except ValueError as e:
+            raise SystemExit(f"inverse map: {e}")
         targets = json.loads(a.targets) if a.targets else [
             (float(v), float(w)) for v in (0.06, 0.08, 0.10) for w in (-1.5, -0.8, 0.0, 0.8)]
-        specs = S.validation(targets, inv, duration_s=a.drive_s)
+        specs = S.validation(targets, inv, duration_s=a.drive_s, seed=seed)
     else:
         raise SystemExit(f"unknown schedule kind {a.kind}")
-    S.save(specs, a.out)
-    print(f"wrote {a.out}: {S.summary(specs)}")
+    meta = {"kind": a.kind, "seed": seed, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "args": {k: v for k, v in vars(a).items() if k not in ("fn", "seed")}}
+    S.save(specs, a.out, meta)
+    print(f"wrote {a.out} (seed {seed}): {S.summary(specs)}")
+
+
+def _check_proto(bot, bot_info, bot_file):
+    """Refuse a bot registered with another IR protocol version: every frame would be a CRC error on it, so each
+    segment would end 'missed' and every re-centring in a 'no_progress' pause, with no hint at the cause."""
+    if bot_info.get("proto") is None:             # not from register: nothing to compare
+        return
+    err = P.proto_error(bot_info, f"bot {bot} ({bot_file})", "calib_bot")
+    if err:
+        raise SystemExit(f"{err}, then run register again")
+
+
+def _check_watchdog(bot, bot_info, period_ms, specs):
+    """Refuse a driving schedule when one lost frame would trip the bot's command watchdog (README B.4: at least
+    2.5 blaster periods). Link tests (ping) and static runs do not drive, so they may run at any period."""
+    wd = bot_info.get("watchdog_ms")
+    if wd is None or all(s.kind in ("ping", "static") for s in specs):
+        return
+    if float(wd) < 2.5 * period_ms:
+        raise SystemExit(f"bot {bot}: watchdog_ms={wd} is under 2.5 blaster periods ({2.5 * period_ms:.0f} ms at "
+                         f"bridge.period_ms={period_ms}), so single lost frames would stop it mid-segment. Rebuild "
+                         "calib_bot with a larger WATCHDOG_MS and register it again, or shorten the period.")
 
 
 def cmd_run(a):
     from .geometry import Arena
     from .poses import PoseStore, TrackerCSV
     from .scheduler import RecentreConfig, Session, SessionConfig, SafetyConfig, console_pause
-    specs = S.load(a.schedule)
+    specs, schedule_meta = S.load_with_meta(a.schedule)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    S.save(specs, out / "schedule.json")
-    extra = {"schedule_file": str(a.schedule), "argv": sys.argv}
+    S.save(specs, out / "schedule.json", schedule_meta)
+    extra = {"schedule_file": str(a.schedule), "schedule_meta": schedule_meta, "argv": sys.argv}
+    led_mode, tracker, n_warn = "auto", None, 0
     if a.sim:
         from . import sim
         from .clock import SimClock
@@ -108,42 +193,49 @@ def cmd_run(a):
         on_pause = (lambda msg: (print("PAUSE (sim, aborting):", msg), "abort")[1])
         cam = None
     else:
-        from .bridge import SerialBridge
+        from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, BridgeError, SerialBridge
         from .clock import RealClock
-        from .tracker import BotMarker, CameraThread, Tracker, Undistorter, open_camera
+        from .tracker import CameraThread, open_camera
         rig = _rig(a.rig)
         geom, arena = rig.geometry(a.bot), rig.arena
         bcfg = rig.bots[str(a.bot)]
+        period_ms = int(rig.bridge.get("period_ms", 110))
+        if not PERIOD_MIN_MS <= period_ms <= PERIOD_MAX_MS:
+            raise SystemExit(f"bridge.period_ms={period_ms} outside {PERIOD_MIN_MS}..{PERIOD_MAX_MS} (frames take up "
+                             "to 86 ms and the bot's receiver needs 8 ms of silence after each)")
+        bot_file = Path(a.bots_dir) / f"{a.bot}.json"
+        if bot_file.exists():
+            extra["bot_info"] = json.loads(bot_file.read_text())
+            extra["pwm_hz"] = extra["bot_info"].get("pwm_hz")
+            _check_proto(a.bot, extra["bot_info"], bot_file)
+            _check_watchdog(a.bot, extra["bot_info"], period_ms, specs)
+        else:
+            print(f"warning: {bot_file} not found (run 'register'): the bot's watchdog is not checked against "
+                  f"the blaster period")
         cam_cfg = rig.camera
-        und = Undistorter.from_npz(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
-        tracker = Tracker(rig.reference_markers,
-                          {geom.marker_id: BotMarker(geom.marker_id, tuple(bcfg.get("led_offset", (0.012, 0.0))),
-                                                     bcfg.get("marker_size_m", 0.02))},
-                          und, ref_size_m=cam_cfg.get("reference_size_m"))
+        tracker = _make_tracker(rig, [bcfg])
         poses = PoseStore()
         cap = open_camera(cam_cfg.get("index", 0), cam_cfg.get("width", 1280), cam_cfg.get("height", 720),
                           cam_cfg.get("fps", 60), cam_cfg.get("exposure"))
         cam = CameraThread(cap, tracker, poses, out / "tracker.csv",
                            out / "video.avi" if a.video else None, cam_cfg.get("fps", 60))
         cam.start()
-        t0 = time.time()
-        while tracker.H is None:
-            if time.time() - t0 > 10:
-                raise SystemExit("reference markers not all visible: homography not fitted")
-            if cam.error:
-                raise SystemExit(f"camera: {cam.error}")
-            time.sleep(0.1)
-        print(f"homography fitted: reference reprojection RMS {tracker.reproj_rms_m * 1000:.2f} mm")
-        bridge = SerialBridge(a.port or rig.bridge["port"], period_ms=rig.bridge.get("period_ms", 110))
+        _wait_for_fit(tracker, cam)
+        n_warn = _print_fit(tracker)
+        led_mode = tracker.led_mode
+        try:                                      # e.g. a blaster on another protocol version
+            bridge = SerialBridge(a.port or rig.bridge["port"], period_ms=period_ms)
+        except BridgeError as e:
+            cam.stop()
+            cam.join(2.0)
+            raise SystemExit(f"blaster: {e}")
         clock = RealClock()
-        bot_file = Path(a.bots_dir) / f"{a.bot}.json"
-        if bot_file.exists():
-            extra["bot_info"] = json.loads(bot_file.read_text())
-            extra["pwm_hz"] = extra["bot_info"].get("pwm_hz")
-        extra.update({"rig": rig.to_dict(), "homography_rms_m": tracker.reproj_rms_m})
+        extra.update({"rig": rig.to_dict(), "homography_rms_m": tracker.reproj_rms_m,
+                      "ref_check": tracker.ref_check, "reference_summary": tracker.reference_summary(),
+                      "tracker_warnings": [w for _, w in tracker.warnings[:n_warn]]})
         on_pause = console_pause
     cfg = SessionConfig(bot_id=a.bot, geometry=geom, arena=arena, out_dir=str(out), notes=a.notes or "",
-                        safety=SafetyConfig(), recentre=RecentreConfig())
+                        safety=SafetyConfig(), recentre=RecentreConfig(), led_mode=led_mode)
     sess = Session(cfg, bridge, poses, clock, on_pause=on_pause, extra_meta=extra)
     try:
         counts = sess.run(specs)
@@ -155,20 +247,24 @@ def cmd_run(a):
         if a.sim:
             world.csv.close()
         bridge.close()
+        if tracker is not None:
+            _print_tracker_warnings(tracker, start=n_warn)
 
 
 def cmd_track(a):
     from .poses import PoseStore
-    from .tracker import BotMarker, CameraThread, Tracker, Undistorter, open_camera, track_video
+    from .tracker import CameraThread, open_camera, track_video
     rig = _rig(a.rig)
     cam_cfg = rig.camera
-    und = Undistorter.from_npz(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
-    bots = {int(b["marker_id"]): BotMarker(int(b["marker_id"]), tuple(b.get("led_offset", (0.012, 0.0))),
-                                           b.get("marker_size_m", 0.02)) for b in rig.bots.values()}
-    tracker = Tracker(rig.reference_markers, bots, und, ref_size_m=cam_cfg.get("reference_size_m"))
+    tracker = _make_tracker(rig, rig.bots.values())
     if a.video:
         n = track_video(a.video, tracker, a.out, fps=a.fps)
-        print(f"{n} frames -> {a.out}; reference RMS {tracker.reproj_rms_m * 1000:.2f} mm")
+        print(f"{n} frames -> {a.out}")
+        if tracker.H is None:
+            print("homography not fitted: the reference markers were not all visible in enough frames")
+        else:
+            print(f"homography: {tracker.reference_summary()}; LED signal: {tracker.led_mode}")
+        _print_tracker_warnings(tracker)
         return
     cap = open_camera(cam_cfg.get("index", 0), cam_cfg.get("width", 1280), cam_cfg.get("height", 720),
                       cam_cfg.get("fps", 60), cam_cfg.get("exposure"))
@@ -176,16 +272,20 @@ def cmd_track(a):
     cam = CameraThread(cap, tracker, poses, a.out, a.record, cam_cfg.get("fps", 60))
     cam.start()
     t_end = time.time() + a.seconds
+    n_warn = None
     try:
         while time.time() < t_end and cam.is_alive():
             time.sleep(1.0)
+            if n_warn is None and tracker.H is not None:
+                n_warn = _print_fit(tracker)
             print(f"frames {poses.frames}  H {'ok' if tracker.H is not None else 'waiting'}  "
-                  + "  ".join(f"{i}:({d.x:.3f},{d.y:.3f})" for i in bots if (d := poses.latest(i))))
+                  + "  ".join(f"{i}:({d.x:.3f},{d.y:.3f})" for i in tracker.bots if (d := poses.latest(i))))
     finally:
         cam.stop()
         cam.join(2.0)
-    for t, w in tracker.warnings[-5:]:
-        print("warning:", w)
+    if cam.error:
+        print("camera:", cam.error)
+    _print_tracker_warnings(tracker, start=n_warn or 0)
 
 
 def cmd_analyze(a):
@@ -241,7 +341,13 @@ def main(argv=None):
     p.add_argument("--pairs", help="JSON list of [L, R] for circles")
     p.add_argument("--forward-map", help="forward_map.json (validation)")
     p.add_argument("--targets", help="JSON list of [v, omega] (validation)")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--p-min", type=float, nargs="+", metavar="DRIVE",
+                   help="validation: lowest drive of the operating region, one value or L R (default: per motor "
+                        "max(60, p0 + 5), the same as analyze)")
+    p.add_argument("--v-bat", type=float, help="validation: battery voltage [V] at which a 'bat' map is inverted "
+                                               "(default: its median training voltage; ignored by other models)")
+    p.add_argument("--seed", type=int, help="order seed for grid / prbs / validation (default: a fresh random one; "
+                                            "it is recorded in the schedule JSON)")
     p.set_defaults(fn=cmd_schedule)
 
     p = sub.add_parser("run")

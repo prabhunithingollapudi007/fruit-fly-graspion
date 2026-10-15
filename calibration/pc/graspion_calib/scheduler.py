@@ -8,7 +8,19 @@ Per segment (FEASIBILITY.md 5.2, "PC-driven segments over IR"):
      at the blaster period, so the bot's ~300 ms command watchdog never trips while the PC is healthy.
   4. STOP. A segment with no flash and no motion is retried once ("missed": the SEG frame was lost).
 PC-side stops (STOP burst, segment marked): marker lost for marker_loss_s, predicted pose outside the
-geofence, red low-battery flash, or any exception. On exit the scheduler sends STOP and a broadcast STOP.
+geofence, red low-battery flash, or any exception. Re-centring has its own stops: marker loss, red flash,
+predicted pose leaving the arena while moving away from home, no progress, diverging, timeout.
+On exit the scheduler sends STOP to the bot and a broadcast STOP, each in its own try (resyncing the bridge
+after a failure, e.g. a Ctrl-C that left half a reply in the serial buffer); the original exception propagates.
+The LED checks skip NaN samples (LED patch outside the image, or led_r on a mono camera).
+
+Mono camera (tracker led_mode 'luma', led_r NaN): a red low-battery flash cannot be told from a sync flash, so the
+PC-side low-battery stop cannot fire. The session warns once and relies on the bot's own latch: after 3 low mVbat
+readings the bot stops its motors and answers every SEG, RECENTRE or PING with a flash and no motion (and logs no
+record for it). The PC then sees re-centring without progress (operator pause with a low-battery hint), or a
+segment that flashes but neither moves nor turns although a motor is driven at stall_drive or more (status
+'stalled', the low-battery pause, retried like 'lowbat'). Weaker segments between the latch and that point stay
+'ok' with no motion: drop them by hand (moved_m in segments.csv).
 
 UNTESTED on the rig: exercised only against sim.SimWorld (tests/test_scheduler.py).
 """
@@ -24,7 +36,7 @@ from pathlib import Path
 import numpy as np
 
 from . import protocol as P
-from .bridge import FrameLog, SendRecord
+from .bridge import BridgeError, FrameLog, SendRecord
 from .geometry import Arena, BotGeometry, wrap
 from .poses import PoseStore
 from .schedules import SegmentSpec
@@ -32,12 +44,17 @@ from .schedules import SegmentSpec
 SEGMENT_COLUMNS = ["seg", "attempt", "kind", "tag", "block", "L", "R", "levels", "duration_s", "rest_s",
                    "t_seg_req", "t_seg_ack", "t_end_ack", "status", "flash_live", "moved_m", "x0", "y0", "th0",
                    "n_frames"]
+ANCHOR_PINGS = 3                       # a ping run starts with this many isolated PINGs (run_ping) ...
+ANCHOR_GAP_S = 0.8                     # ... this far apart: more than extract.match_flashes' max_lag (0.5 s) plus
+                                       # half a period, so each anchor's flash fits only its own PING at the true lag
 
 
 @dataclass
 class SafetyConfig:
     marker_loss_s: float = 0.25        # no detection for this long -> stop (camera ~40-60 fps: 10+ frames)
-    lookahead_s: float = 0.3           # geofence check on the pose predicted this far ahead
+    lookahead_s: float | None = None   # geofence check on the pose predicted this far ahead; None: stop_latency_s
+    cam_latency_s: float = 0.05        # exposure -> frame read (pose times are read times); INFERRED, measure it
+    stop_tail_s: float = 0.1           # after the STOP frame: decode gap (8 ms), dead time and motor lag
     recentre_timeout_s: float = 25.0
     reacquire_timeout_s: float = 5.0
     stop_repeats: int = 2
@@ -45,6 +62,18 @@ class SafetyConfig:
     flash_rise: float = 40.0           # LED level rise over the pre-segment baseline that counts as a flash
     missed_motion_m: float = 0.003     # less displacement than this + no flash -> the SEG was missed
     max_retries: int = 1
+    stall_drive: int = 90              # mono camera only: a full segment with a flash and |drive| >= this on a
+    stall_turn_rad: float = 0.1        # motor that never got missed_motion_m from its start nor turned this far is
+                                       # "stalled": a latched bot answers SEG with a flash and no motion. 90 is well
+                                       # above any dead zone; the turn test keeps spins in place from counting
+
+    def stop_latency_s(self, period_s):
+        """Pose exposure -> bot at rest after the PC reacts to it: camera latency, up to one period until the next
+        check (the loop is paced by the blocking send), up to one period until the STOP has left the blaster,
+        then decode and spin-down. Lengthening the blaster period therefore needs a longer geofence lookahead."""
+        if self.lookahead_s is not None:
+            return self.lookahead_s
+        return self.cam_latency_s + 2 * period_s + self.stop_tail_s
 
 
 @dataclass
@@ -57,6 +86,15 @@ class RecentreConfig:
     pivot_cw: tuple = (90, 0)
     straight: tuple = (85, 85)         # equal drive drifts CW on the twin's bot; the loop corrects it
     latency_s: float = 0.2             # heading prediction horizon (camera + IR latency)
+    # Stops for wrong guesses above or a wrong marker_yaw (sign errors steer the bot away from home):
+    fence_m: float = 0.03              # geofence: the predicted pose must stay this far inside the arena (about the
+                                       # body half-length), checked only while it moves away from home. Not the
+                                       # segment margin: a segment may end at the margin line, and a one-motor pivot
+                                       # moves the CoM on a circle of a few cm (~9 cm across in the simulator)
+    progress_m: float = 0.02           # stop if the distance to home has not dropped by progress_m ...
+    progress_s: float = 4.0            # ... within progress_s (e.g. swapped pivot pairs: the bot spins facing away)
+    diverge_m: float = 0.03            # stop if the distance grows by this during one straight run (e.g. marker_yaw
+                                       # off by pi: the bot drives straight away from home)
 
 
 @dataclass
@@ -68,6 +106,15 @@ class SessionConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     recentre: RecentreConfig = field(default_factory=RecentreConfig)
     notes: str = ""
+    led_mode: str = "auto"             # tracker.led_mode: 'chroma' (colour), 'luma' (mono: no red channel) or
+                                       # 'auto' (from the first detection with a finite led_b: led_r NaN = mono)
+
+
+MONO_WARNING = ("mono camera (tracker led_mode 'luma', led_r = NaN): a red low-battery flash looks like a sync "
+                "flash, so the PC-side low-battery stop is off. The bot still stops itself (low-battery latch: "
+                "motors off, every SEG / RECENTRE / PING answered with a flash and no motion). The session pauses "
+                "when re-centring makes no progress or a strong segment flashes without moving ('stalled'); "
+                "segments with no motion before that are logged 'ok': check moved_m in segments.csv")
 
 
 class SessionAbort(RuntimeError):
@@ -97,11 +144,20 @@ class Session:
         self.meta = {"bot_id": cfg.bot_id, "geometry": asdict(cfg.geometry), "arena": asdict(cfg.arena),
                      "safety": asdict(cfg.safety), "recentre": asdict(cfg.recentre), "notes": cfg.notes,
                      "started_wall": time.strftime("%Y-%m-%d %H:%M:%S"), "proto": P.PROTO_VERSION,
-                     "bridge_info": getattr(bridge, "info", "")}
+                     "bridge_info": getattr(bridge, "info", ""), "period_s": self.period_s(),
+                     "geofence_lookahead_s": self.lookahead_s(), "led_mode": cfg.led_mode}
         if extra_meta:
             self.meta.update(extra_meta)
+        self.led_mode = cfg.led_mode
+        self._mono_warned = False
         self._write_meta()
         self.counts = {}
+
+    def period_s(self):
+        return float(getattr(self.bridge, "period_s", 0.11))
+
+    def lookahead_s(self):
+        return self.cfg.safety.stop_latency_s(self.period_s())
 
     # ------------------------------------------------------------------ logging
     def _write_meta(self):
@@ -112,6 +168,12 @@ class Session:
         self._ev_w.writerow([f"{self.clock.now():.6f}", kind, detail])
         self._ev_f.flush()
         self.counts[kind] = self.counts.get(kind, 0) + 1
+
+    def warn(self, msg):
+        """Operator warning: printed, logged as a 'warning' event and kept in session.json ('warnings')."""
+        print(f"warning: {msg}")
+        self.event("warning", msg)
+        self.meta.setdefault("warnings", []).append(msg)
 
     def send(self, op, L=0, R=0, seg=-1, purpose="", bot=None):
         raw = P.pack(self.cfg.bot_id if bot is None else bot, op, L, R)
@@ -164,60 +226,133 @@ class Session:
                 t0 = self.clock.now()
             self.clock.sleep(0.05)
 
+    def _mono(self):
+        """True on a mono camera (led_mode 'luma'), where no red low-battery flash can be seen. 'auto' is resolved
+        from the first detection with a finite led_b: led_r is NaN there only in the tracker's luma mode (an LED
+        patch outside the image gives NaN in both). Warns once (MONO_WARNING)."""
+        if self.led_mode == "auto":
+            for d in self.poses.history(self.cfg.geometry.marker_id):
+                if math.isfinite(d.led_b):
+                    self.led_mode = "chroma" if math.isfinite(d.led_r) else "luma"
+                    self.meta["led_mode"] = self.led_mode
+                    break
+        if self.led_mode == "luma" and not self._mono_warned:
+            self._mono_warned = True
+            self.warn(MONO_WARNING)
+        return self.led_mode == "luma"
+
     def _led_baseline(self, t_before):
+        """Median (blue, red) LED level over the second before t_before, from finite samples only; NaN when there
+        is none (e.g. led_r on a mono camera)."""
         h = self.poses.history(self.cfg.geometry.marker_id, since_t=t_before - 1.0)
         h = [d for d in h if d.t < t_before]
-        if not h:
-            return 0.0, 0.0
-        return float(np.median([d.led_b for d in h])), float(np.median([d.led_r for d in h]))
+        out = []
+        for c in ("b", "r"):
+            vals = [v for v in (getattr(d, "led_" + c) for d in h) if math.isfinite(v)]
+            out.append(float(np.median(vals)) if vals else float("nan"))
+        return tuple(out)
 
     def _flash_seen(self, t_from, t_to, base, channel="b"):
+        """LED level in [t_from, t_to] rose more than flash_rise over base. NaN samples (LED patch outside the
+        image) are skipped, so one cannot hide a flash. Without a finite base, the rise is measured over the
+        window's own lowest sample (a flash lasts ~70 ms of the window). That fallback needs a window with no
+        flash of the other colour: a blue sync flash pulls led_r = R - (G+B)/2 down by about half its rise, so
+        the dark level over that dip would read as a red flash. Re-centring windows have none (RECENTRE and STOP
+        never flash blue); run_drive checks red only against a finite baseline."""
         h = self.poses.history(self.cfg.geometry.marker_id, since_t=t_from)
-        vals = [getattr(d, "led_" + channel) for d in h if d.t <= t_to]
-        return bool(vals) and max(vals) - base > self.cfg.safety.flash_rise
+        vals = [v for v in (getattr(d, "led_" + channel) for d in h if d.t <= t_to) if math.isfinite(v)]
+        if not vals:
+            return False
+        if not math.isfinite(base):
+            base = min(vals)
+        return max(vals) - base > self.cfg.safety.flash_rise
 
     # ------------------------------------------------------------------ re-centring
     def recentre(self, seg):
+        """Bang-bang re-centring to home. Returns "done", or why it stopped the bot: "lowbat" (red flash),
+        "geofence", "diverging", "no_progress" or "timeout" (see RecentreConfig)."""
         rc, saf, arena = self.cfg.recentre, self.cfg.safety, self.cfg.arena
         hx, hy = arena.centre
         mode = "straight"
         t0 = self.clock.now()
+        _, base_r = self._led_baseline(t0)
         n = 0
+        best = t_best = d_straight = None
         while True:
             if self.pose_age() > saf.marker_loss_s:
                 self.stop(seg, "recentre_marker_loss")
                 self.event("marker_loss", f"recentre seg {seg}")
                 self.wait_for_marker()
+                best = d_straight = None             # restart the progress checks after the wait
                 continue
-            _, x, y, th = self.body_pose()
+            now = self.clock.now()
+            t_pose, x, y, th = self.body_pose()
             dist = math.hypot(hx - x, hy - y)
             if dist < rc.r_done:
-                self.stop(seg, "recentre_done")
-                self.event("recentred", f"seg {seg} frames {n} in {self.clock.now() - t0:.1f}s")
-                return True
-            if self.clock.now() - t0 > saf.recentre_timeout_s:
-                self.stop(seg, "recentre_timeout")
-                self.event("recentre_timeout", f"seg {seg} dist {dist:.3f}")
-                return False
-            _, _, w = self.recent_rates()
+                result = "done"
+                break
+            if not self._mono() and self._flash_seen(t0, now, base_r, "r"):  # a latched bot answers RECENTRE
+                result = "lowbat"                                               # with a red flash only
+                break
+            if now - t0 > saf.recentre_timeout_s:
+                result = "timeout"
+                break
+            if best is None or dist < best - rc.progress_m:
+                best, t_best = dist, now
+            elif now - t_best > rc.progress_s:
+                result = "no_progress"
+                break
+            vx, vy, w = self.recent_rates()
+            h = self.lookahead_s() + max(0.0, now - t_pose)
+            px, py = x + vx * h, y + vy * h
+            if not arena.inside(px, py, min(rc.fence_m, arena.margin)) and math.hypot(hx - px, hy - py) > dist:
+                result = "geofence"
+                break
             e = wrap(math.atan2(hy - y, hx - x) - (th + w * rc.latency_s))
             if mode == "pivot" and abs(e) < math.radians(rc.e_exit_deg):
                 mode = "straight"
             elif mode == "straight" and abs(e) > math.radians(rc.e_enter_deg):
                 mode = "pivot"
+            if mode == "straight":                   # heading within e_enter of home: the distance must shrink
+                d_straight = dist if d_straight is None else min(d_straight, dist)
+                if dist > d_straight + rc.diverge_m:
+                    result = "diverging"
+                    break
+            else:
+                d_straight = None
             L, R = rc.straight if mode == "straight" else (rc.pivot_ccw if e > 0 else rc.pivot_cw)
             self.send(P.OP_RECENTRE, L, R, seg, f"recentre_{mode}")
             n += 1
+        self.stop(seg, f"recentre_{result}")
+        detail = f"seg {seg} frames {n} in {self.clock.now() - t0:.1f}s dist {dist:.3f}"
+        self.event("recentred" if result == "done" else f"recentre_{result}", detail)
+        return result
 
     def _ensure_home(self, seg):
         hx, hy = self.cfg.arena.centre
         while True:
             self.wait_for_marker()
             _, x, y, _ = self.body_pose()
-            if math.hypot(hx - x, hy - y) <= self.cfg.recentre.r_start or self.recentre(seg):
+            if math.hypot(hx - x, hy - y) <= self.cfg.recentre.r_start:
                 return
-            if self.on_pause(f"re-centring failed before segment {seg}: place the bot near home") == "abort":
-                raise SessionAbort("re-centring failed")
+            result = self.recentre(seg)
+            if result == "done":
+                return
+            if result == "lowbat":
+                self._lowbat_pause(seg)
+                continue
+            hint = (" (mono camera: a low-battery latch looks like this, check the battery)"
+                    if result == "no_progress" and self._mono() else "")
+            if self.on_pause(f"re-centring failed ({result}) before segment {seg}: place the bot near home{hint}") \
+                    == "abort":
+                raise SessionAbort(f"re-centring failed ({result})")
+
+    def _lowbat_pause(self, seg, status="lowbat"):
+        self.event(status, f"seg {seg}")
+        why = ("red flash: low battery latched" if status == "lowbat" else
+               f"segment {seg} flashed but did not move: on a mono camera this is how the low-battery latch looks")
+        if self.on_pause(f"{why}. Charge or swap, reset the bot (or send 'r' over USB), then continue") == "abort":
+            raise SessionAbort("low battery")
 
     # ------------------------------------------------------------------ one segment
     def _log_segment(self, i, attempt, spec: SegmentSpec, rec_seg, rec_end, status, flash, moved, pose0, n):
@@ -237,11 +372,19 @@ class Session:
         self._log_segment(i, 0, spec, r0, r1, "ok", False, 0.0, None, 0)
 
     def run_ping(self, i, spec):
+        """PINGs for spec.duration_s: the first ANCHOR_PINGS each followed by ANCHOR_GAP_S of silence, then back
+        to back at the blaster period. In a train of PINGs a lag and the lag plus or minus one period can match
+        equally many flashes when the first or last PING is lost (extract.match_flashes), e.g. with a camera offset
+        above the period; the isolated anchors' flashes match only the true lag."""
         self.wait_for_marker()
         first = last = None
         n = 0
         t_end = self.clock.now() + spec.duration_s
         while self.clock.now() < t_end:
+            if last is not None and n <= ANCHOR_PINGS:
+                self.clock.sleep(max(0.0, min(last.t_ack + ANCHOR_GAP_S, t_end) - self.clock.now()))
+                if self.clock.now() >= t_end:
+                    break
             last = self.send(P.OP_PING, 0, 0, i, "ping")
             first = first or last
             n += 1
@@ -256,6 +399,8 @@ class Session:
         rec_seg = self.send(P.OP_SEG, L0, R0, i, "seg")
         t0 = rec_seg.t_ack
         status, n, flash, checked = "ok", 1, False, False
+        reach = turn = 0.0                           # largest displacement and heading change from pose0
+        la = self.lookahead_s()
         while True:
             now = self.clock.now()
             el = now - t0
@@ -264,14 +409,23 @@ class Session:
             if self.pose_age() > saf.marker_loss_s:
                 status = "marker_loss"
                 break
-            _, x, y, _ = self.body_pose()
+            t_pose, x, y, th = self.body_pose()
+            if pose0:
+                reach = max(reach, math.hypot(x - pose0[0], y - pose0[1]))
+                turn = max(turn, abs(wrap(th - pose0[2])))
             vx, vy, _ = self.recent_rates()
-            if not arena.inside(x + vx * saf.lookahead_s, y + vy * saf.lookahead_s):
+            h = la + max(0.0, now - t_pose)          # the latest pose is already pose_age old
+            if not arena.inside(x + vx * h, y + vy * h):
                 status = "geofence"
                 break
-            if self._flash_seen(t0, now, base_r, "r"):
-                status = "lowbat"
-                break
+            if not self._mono():
+                if not math.isfinite(base_r) and el > saf.flash_window_s + 0.1:
+                    # no red level before the SEG (LED patch outside the image): the median of the last second,
+                    # where the ~70 ms sync flash (a dip in led_r) or red flash is a minority. Not the lowest sample
+                    base_r = self._led_baseline(now)[1]
+                if math.isfinite(base_r) and self._flash_seen(t0, now, base_r, "r"):
+                    status = "lowbat"
+                    break
             if not checked and el > saf.flash_window_s + 0.1:
                 checked = True
                 flash = self._flash_seen(t0, t0 + saf.flash_window_s + 0.1, base_b, "b")
@@ -279,12 +433,17 @@ class Session:
                 if not flash and moved < saf.missed_motion_m and (L0 or R0):
                     status = "missed"
                     break
-            L, R = spec.level_at(el + 0.5 * getattr(self.bridge, "period_s", 0.11))
+            L, R = spec.level_at(el + 0.5 * self.period_s())
             self.send(P.OP_DRIVE, L, R, i, "drive")
             n += 1
         rec_end = self.stop(i, "end" if status == "ok" else status)
         if not checked:
             flash = self._flash_seen(t0, t0 + saf.flash_window_s + 0.1, base_b, "b")
+        strong = (max(max(abs(lv[1]), abs(lv[2])) for lv in spec.levels) >= saf.stall_drive
+                  and spec.duration_s >= 1.0)        # long enough to move whatever the lag
+        if (status == "ok" and flash and pose0 and strong and reach < saf.missed_motion_m
+                and turn < saf.stall_turn_rad and self._mono()):
+            status = "stalled"                       # mono camera: how the low-battery latch looks (module doc)
         pose = self.body_pose()
         moved = math.hypot(pose[1] - pose0[0], pose[2] - pose0[1]) if (pose and pose0) else float("nan")
         self._log_segment(i, attempt, spec, rec_seg, rec_end, status, flash, moved, pose0, n)
@@ -295,6 +454,7 @@ class Session:
         self.meta["n_segments"] = len(specs)
         self._write_meta()
         try:
+            self._mono()                             # warns at the start when the camera is known to be mono
             for i, spec in enumerate(specs):
                 if spec.kind == "static":
                     self.run_static(i, spec)
@@ -309,11 +469,8 @@ class Session:
                     self.stop(i, "pre_rest")
                     self.clock.sleep(spec.rest_s)
                     status = self.run_drive(i, attempt, spec)
-                    if status == "lowbat":
-                        self.event("lowbat", f"seg {i}")
-                        if self.on_pause("red flash: low battery latched. Charge or swap, reset the bot "
-                                         "(or send 'r' over USB), then continue") == "abort":
-                            raise SessionAbort("low battery")
+                    if status in ("lowbat", "stalled"):
+                        self._lowbat_pause(i, status)
                         continue
                     if status == "missed":
                         self.event("missed", f"seg {i} attempt {attempt}")
@@ -328,8 +485,7 @@ class Session:
             self.event("abort", str(e))
         finally:
             try:
-                self.stop(-1, "final")
-                self.send(P.OP_STOP, seg=-1, purpose="final_broadcast", bot=P.ADDR_BROADCAST)
+                failed, n_ok = self._final_stops()
             finally:
                 self.meta["counts"] = self.counts
                 self.meta["finished_wall"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -337,4 +493,28 @@ class Session:
                 self.frames.close()
                 self._seg_f.close()
                 self._ev_f.close()
+        if failed and not n_ok:                      # reached only when no other exception is propagating
+            raise BridgeError(f"no final STOP was acknowledged: {failed[0]!r}") from failed[0]
         return self.counts
+
+    def _final_stops(self):
+        """STOP to the bot (stop_repeats times) and a broadcast STOP, each in its own try, so one failure does not
+        skip the rest. After a failure the bridge is resynced: a Ctrl-C during the blocking read leaves the
+        interrupted frame's reply (or the rest of it) in the serial buffer, which the next read would take as
+        the reply to the STOP (that STOP has still been transmitted). Returns (exceptions, number acknowledged)."""
+        frames = [None] * max(1, self.cfg.safety.stop_repeats) + [P.ADDR_BROADCAST]
+        failed, n_ok = [], 0
+        for bot in frames:
+            try:
+                self.send(P.OP_STOP, seg=-1, purpose="final" if bot is None else "final_broadcast", bot=bot)
+                n_ok += 1
+            except Exception as e:                   # a second Ctrl-C (KeyboardInterrupt) is not caught
+                failed.append(e)
+                self.event("final_stop_error", repr(e))
+                resync = getattr(self.bridge, "resync", None)
+                if resync is not None:
+                    try:
+                        resync()
+                    except Exception as e2:
+                        self.event("final_stop_error", f"resync: {e2!r}")
+        return failed, n_ok

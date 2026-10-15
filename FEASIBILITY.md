@@ -112,7 +112,7 @@ All learned actors share one contract:
 
 | link | rate | payload / addressing | bot hardware | verdict |
 |---|---|---|---|---|
-| **IR NEC into the bot's TSOP75438** from an overhead IR LED array | 68 ms per frame, repeat 108–110 ms → **≤ 9 frames/s for the whole channel**. The TSOP AGC4 long-burst gap rule may cut this to ~5/s, so bench-test it. Decode latency ≈ 73 ms | NEC: 8-bit address (= bot ID) + 8-bit command, with inverses. That is 4-bit L + 4-bit R, or an index into a 256-entry per-bot codebook. Onkyo: 16 + 16 bits, no check. **Firmware must filter the address**, which the examples ignore | **none**: lens-up per the V1.3 schematic (TSOP75438TT), which suits an overhead blaster. **Verify on your bots**, especially V1.1, which has no published schematic | **Best Phase-0/1 link**, with zero hardware change. N bots get 9/N Hz each |
+| **IR NEC into the bot's TSOP75438** from an overhead IR LED array | 68 ms per frame, repeat 108–110 ms → **≤ 9 frames/s for the whole channel**. The TSOP AGC4 long-burst gap rule may cut this to ~5/s, so bench-test it. Decode latency ≈ 76 ms (the frame plus IRremote's 8 ms end-of-frame gap). The calibration frames replace the inverse bytes with data and a CRC, so they take 53–82 ms (calibration/README.md §8) | NEC: 8-bit address (= bot ID) + 8-bit command, with inverses. That is 4-bit L + 4-bit R, or an index into a 256-entry per-bot codebook. Onkyo: 16 + 16 bits, no check. **Firmware must filter the address**, which the examples ignore | **none**: lens-up per the V1.3 schematic (TSOP75438TT), which suits an overhead blaster. **Verify on your bots**, especially V1.1, which has no published schematic | **Best Phase-0/1 link**, with zero hardware change. N bots get 9/N Hz each |
 | IR custom pulse-distance coding within the TSOP rules | ~20 frames/s (ESTIMATE) | 32+ bits | none | Worth a bench test |
 | **BLE via the digital-twin STM32 add-on** | The paper reports 30 Hz; the published firmware is consistent only with ~10 Hz control (§5.1), so verify | 13-byte pose packets; body command `"M<l>,<r>\n"` at 115200 baud | Borrow it. Three caveats: (1) the body-side parser is unpublished, and a new one must map `M0,0` to stop (128 / EN LOW), **not** analogWrite 0, which is full reverse; (2) it must ignore the add-on's non-`M` lines ("Connected"/"Disconnected"); (3) using it as a pure link for a PC brain needs new add-on firmware, since it currently runs TinyMPC itself | **Best Phase-1 link if the GRASP/FAU group lends it.** Its real advantage over IR is lower latency and a reliable ≥ 10 Hz |
 | BLE via the 2026 head (STM32U575 + ANNA-B112) | same class | head↔body UART4 = body D9/D10 | **no STM32 firmware exists**; the nRF needs an SWD first flash; it shares the body's 100 mA LDO | Phase 2–3; also enables onboard TinyMPC |
@@ -127,7 +127,7 @@ BLE connections: one nRF central (S132/S140) supports ≤ 20 links, and Windows'
 
 | setup | total | in control periods |
 |---|---|---|
-| USB webcam (~90–112 ms) + IR NEC (73 ms decode) + USB-serial bridge (1–16 ms) | **≈ 245–260 ms** (lower bound) | ~2.5 dt |
+| USB webcam (~90–112 ms) + IR NEC (≈ 76 ms decode) + USB-serial bridge (1–16 ms) | **≈ 245–260 ms** (lower bound) | ~2.5 dt |
 | webcam + BLE | ≈ 185 ms | ~2 dt |
 | global-shutter ≥ 120 fps camera + IR NEC + bridge | ≈ 150–165 ms | ~1.5 dt |
 | global-shutter camera + BLE | **≈ 90 ms** | < 1 dt |
@@ -209,7 +209,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 ### 5.2 Protocol (UNTESTED design)
 
-**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It compiles and passes 55 offline tests on a simulated rig, but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
+**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (124 tests; 123 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
 
 **Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the PC re-centres the bot between segments. The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
 
@@ -223,8 +223,8 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
    - Fit the 20–22 mm ArUco on an identical cap (§3.3 placement rules); record ID ↔ chip serial; measure the marker offset from the body axis.
    - **Choose the PWM mode first.** The examples default to 732 Hz, out of DRV2603 spec; the in-spec option is 40 kHz. The twin's mode is UNKNOWN because its body firmware is unpublished. A map measured in one mode is invalid in the other, so A/B-test 5 points on bot #1.
 2. **Firmware (calibration and all later phases).**
-   - Build with `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb` and `#include <Adafruit_TinyUSB.h>` (HARDWARE.md §9.1); `pinMode(BUZ_ENABLE, OUTPUT)` first; 128 = stop; EN LOW when stopped.
-   - **Command watchdog:** stop (128, EN LOW) when no valid, address-matched frame arrives within 2–3 frame periods (~300 ms; ESTIMATE). Optionally add a hardware watchdog (Adafruit SleepyDog) against firmware hangs.
+   - Build with `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb` and `#include <Adafruit_TinyUSB.h>` (HARDWARE.md §9.1), or with `opt=small` for any sketch that pulls in a BusIO-based library such as Adafruit APDS9960 or MLX90393 (they fail at `opt=fastest`); `pinMode(BUZ_ENABLE, OUTPUT)` first; 128 = stop; EN LOW when stopped.
+   - **Command watchdog:** stop (128, EN LOW) when no valid, address-matched frame arrives within 2–3 frame periods (~300 ms; ESTIMATE). Optionally add a hardware watchdog (Adafruit SleepyDog) against firmware hangs. `calib_bot` adds a SysTick deadman and a hardware watchdog that cuts EN and resets the MCU at its early warning (calibration/README.md §1). Mind the UF2 bootloader: a QT Py bootloader ≥ 3.11 holds EN HIGH while it runs, including after every watchdog reset unless the firmware sets its quick-boot flag (HARDWARE.md §9.2).
    - IR receive with **address filtering** (bot ID from the chip serial). Keep D6 (IR TX) driven HIGH and the IR LED off during runs, otherwise a floating line can key ~100 mA of IR and jam every receiver.
    - Sync flash on one channel of the top NeoPixel at ~15 % only: a full-white flash plus motor start current can approach the 400 mA overcurrent trip.
    - Log mVbat from the AVR at 0x36 (verify the bytes against a multimeter). Abort the run when mVbat under load falls below ~3.4 V. Keep a USB cable at hand, because trips need USB to recover.
@@ -268,7 +268,7 @@ Add a calibrated-plant env mixin that:
 5. adds measured noise;
 6. integrates at the tracked point, with tracker noise.
 
-The calibration tooling's `calib.json` holds each of these pieces: polytope, inverse map, forward map and bootstrap draws, lag, dead time, latency and noise (calibration/README.md §6).
+The calibration tooling's `calib.json` holds the polytope, inverse map, forward map, lag, dead time, latency and noise; the bootstrap draws are in `forward_map_bootstrap.json` next to it (calibration/README.md §6).
 
 Then:
 - Replace the gain/bias DR with posterior-predictive draws of F_θ.
@@ -308,7 +308,7 @@ Then:
 
 | item | details |
 |---|---|
-| Camera | A USB3 global-shutter camera at 100–200 fps (machine-vision class, or a budget OV9281 UVC module, which needs an IR-cut filter). A 1080p webcam with manual exposure is enough only for the static map, not for dynamics, noise or latency |
+| Camera | A USB3 global-shutter camera at 100–200 fps (machine-vision class, or a budget OV9281 UVC module, which needs an IR-cut filter). Prefer a **colour** sensor: the OV9281 is mono, and on a mono camera the calibration tracker can log only LED brightness, so the red low-battery flash looks like a sync flash and the PC-side low-battery stop does not work (calibration/README.md §2). A 1080p webcam with manual exposure is enough only for the static map, not for dynamics, noise or latency |
 | Rig and light | Aluminium-extrusion overhead rig; flicker-free DC LED panels |
 | Markers | ArUco 4x4_50 caps, 20–25 mm |
 | IR blaster | 4–8× TSAL6200 940 nm LEDs + logic-level MOSFET, driven by an Arduino Nano / RP2040 running IRremote as a USB-serial bridge; optionally one overhead TSOP75438 for uplink |
