@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bot Remote</title>
+<!--
+  Browser remote for a target bot running an upstream GRASPion example (NEC command bytes, address ignored),
+  sent through bot_blaster over Web Serial. Open this file in Chrome or Edge, click Connect, pick the blaster's
+  COM port. Keys: arrows / WASD, space = stop. Each command goes out REPEATS times, because single IR frames
+  can be lost. The examples latch a command (no watchdog): the bot keeps going until it gets STOP.
+  VERIFIED on hardware 2026-10-16 in Chrome/Edge: it drove a second bot forward, left, right and stopped it.
+-->
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --card: #ffffff; --line: #d9d9d4;
+          --accent: #2f6fdb; --stop: #c8372d; --ok: #2b8a3e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #171716; --fg: #ececea; --muted: #9a9a94; --card: #222221; --line: #3a3a38;
+            --accent: #5b8ff0; --stop: #e5554a; --ok: #4cbf63; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+  main { max-width: 420px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .status { color: var(--muted); margin-bottom: 16px; }
+  .status b { color: var(--fg); font-weight: 600; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg);
+           border-radius: 10px; padding: 14px 0; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  #connect { width: 100%; margin-bottom: 16px; background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .pad .stop { background: var(--stop); border-color: var(--stop); color: #fff; font-weight: 600; }
+  .extra { margin-top: 10px; width: 100%; }
+  pre { margin: 16px 0 0; height: 160px; overflow: auto; background: var(--card); border: 1px solid var(--line);
+        border-radius: 10px; padding: 10px; font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bot remote</h1>
+  <div class="status" id="status">Not connected. Chrome or Edge only.</div>
+  <button id="connect">Connect blaster</button>
+  <div class="pad">
+    <span></span><button data-cmd="fwd">↑ Forward</button><span></span>
+    <button data-cmd="left">← Left</button><button data-cmd="stop" class="stop">Stop</button><button data-cmd="right">Right →</button>
+  </div>
+  <button data-cmd="tumble" class="extra">Run and tumble</button>
+  <pre id="log"></pre>
+</main>
+<script>
+// NEC command bytes of the upstream examples (HARDWARE.md, "Example sketch IR command table").
+const CMDS = { fwd: 0x00, stop: 0x01, right: 0x02, left: 0x03, tumble: 0x0A };
+const KEYS = { ArrowUp: "fwd", w: "fwd", ArrowLeft: "left", a: "left", ArrowRight: "right", d: "right",
+               ArrowDown: "stop", s: "stop", " ": "stop" };
+const REPEATS = 3;
+
+// address 0x00 + its inverse, command + its inverse, LSB first (IRremote sendNECRaw order)
+const necRaw = c => (((~c & 0xFF) << 24) | (c << 16) | 0xFF00) >>> 0;
+const hex8 = v => v.toString(16).toUpperCase().padStart(8, "0");
+
+const $ = id => document.getElementById(id);
+const buttons = [...document.querySelectorAll("[data-cmd]")];
+let port, writer, reader, waiting = [], rxBuf = "", busy = Promise.resolve();
+
+function log(s) { const el = $("log"); el.textContent += s + "\n"; el.scrollTop = el.scrollHeight; }
+function setConnected(on, info) {
+  buttons.forEach(b => (b.disabled = !on));
+  $("connect").textContent = on ? "Disconnect" : "Connect blaster";
+  $("status").innerHTML = on ? `Connected: <b>${info}</b>` : "Not connected. Chrome or Edge only.";
+}
+
+// one request line, one reply line
+function request(line) {
+  return new Promise(async (resolve, reject) => {
+    const t = setTimeout(() => { waiting = waiting.filter(w => w !== entry); reject(new Error("no reply to " + line)); }, 1500);
+    const entry = r => { clearTimeout(t); resolve(r); };
+    waiting.push(entry);
+    try { await writer.write(new TextEncoder().encode(line + "\n")); } catch (e) { clearTimeout(t); reject(e); }
+  });
+}
+
+async function readLoop() {
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      rxBuf += new TextDecoder().decode(value);
+      let i;
+      while ((i = rxBuf.indexOf("\n")) >= 0) {
+        const line = rxBuf.slice(0, i).trim(); rxBuf = rxBuf.slice(i + 1);
+        if (line && waiting.length) waiting.shift()(line);
+      }
+    }
+  } catch (e) { log("read error: " + e.message); }
+}
+
+function send(name) {
+  const raw = hex8(necRaw(CMDS[name]));
+  buttons.forEach(b => b.classList.toggle("active", b.dataset.cmd === name && name !== "stop"));
+  busy = busy.then(async () => {
+    let ok = 0;
+    for (let i = 0; i < REPEATS; i++) {
+      try { if ((await request("f " + raw)).startsWith("K " + raw)) ok++; } catch (e) { log(e.message); }
+    }
+    log(`${name.padEnd(6)} 0x${CMDS[name].toString(16).padStart(2, "0")}  ${ok}/${REPEATS} frames sent`);
+  });
+  return busy;
+}
+
+async function connect() {
+  if (!("serial" in navigator)) { log("This browser has no Web Serial. Use Chrome or Edge."); return; }
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x239A }] });
+    await port.open({ baudRate: 115200 });
+    await port.setSignals({ dataTerminalReady: true });   // TinyUSB sends only to an open (DTR) terminal
+    writer = port.writable.getWriter();
+    reader = port.readable.getReader();
+    readLoop();
+    await writer.write(new TextEncoder().encode("\x18\n"));  // drop any partial line in the blaster
+    await new Promise(r => setTimeout(r, 200));
+    const info = await request("V");
+    if (!info.startsWith("I ")) throw new Error("unexpected reply: " + info);
+    log(info);
+    setConnected(true, info.split(" ")[1]);
+  } catch (e) { log("connect failed: " + e.message); await disconnect(); }
+}
+
+async function disconnect() {
+  if (writer) { try { await send("stop"); } catch {} }
+  try { reader && await reader.cancel(); reader && reader.releaseLock(); } catch {}
+  try { writer && writer.releaseLock(); } catch {}
+  try { port && await port.close(); } catch {}
+  port = writer = reader = undefined; waiting = []; rxBuf = "";
+  setConnected(false);
+}
+
+$("connect").onclick = () => (port ? disconnect() : connect());
+buttons.forEach(b => (b.onclick = () => send(b.dataset.cmd)));
+document.addEventListener("keydown", e => {
+  const name = KEYS[e.key];
+  if (!name || !port || e.repeat) return;
+  e.preventDefault();
+  send(name);
+});
+setConnected(false);
+</script>
+</body>
+</html>

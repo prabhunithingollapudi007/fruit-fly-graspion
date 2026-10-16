@@ -1,11 +1,13 @@
 // bot_blaster.ino -- a GRASPion body used as a USB-serial -> IR remote for another bot.
 //
-// UNTESTED on hardware. Speaks the same serial protocol as calibration/blaster/ir_blaster, so the
-// graspion_calib PC bridge drives it unchanged. Mount it upside down above the arena: the bot's IR LED is
-// top-emitting and the target's TSOP faces lens-up.
+// VERIFIED on hardware 2026-10-16 (HARDWARE.md 4.5): flashed on a body, held above a second body running an
+// upstream example, it drove that bot with NEC forward / turn / stop codes. Speaks the same serial protocol as
+// calibration/blaster/ir_blaster, so the graspion_calib PC bridge drives it unchanged (with a calib_bot target:
+// UNTESTED). Mount it upside down above the arena: the bot's IR LED is top-emitting and the target's TSOP faces
+// lens-up. Send each command a few times: single frames can be lost.
 //
-// IR path (HARDWARE.md 4.5): D6 -> AVR, which adds the 38 kHz carrier -> IR LED. The carrier is ON while D6
-// is LOW (INFERRED), so D6 idles HIGH and IRremote sends the bare envelope (USE_NO_SEND_PWM: mark = LOW).
+// IR path: D6 -> AVR, which adds the carrier -> IR LED. The carrier is ON while D6 is LOW (VERIFIED: LED dark
+// with D6 HIGH), so D6 idles HIGH and IRremote sends the bare envelope (USE_NO_SEND_PWM: mark = LOW).
 // An idle LOW would key ~135 mA through the LED on USB.
 //
 // Serial, 115200 baud, one line per request, one reply per request:

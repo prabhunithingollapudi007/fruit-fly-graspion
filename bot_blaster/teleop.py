@@ -1,4 +1,7 @@
-"""Keyboard remote for one calib_bot, sent through the bot_blaster robot (or any ir_blaster). UNTESTED on hardware.
+"""Keyboard remote for one calib_bot, sent through the bot_blaster robot (or any ir_blaster).
+
+UNTESTED on hardware with a calib_bot target. The blaster side is verified (HARDWARE.md 4.5); this script was
+checked only against the simulated blaster and bot. For a target running an upstream example, use remote.html.
 
     python bot_blaster/teleop.py --port COM5 --id 42
 
