@@ -7,6 +7,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 - **Project site:** https://graspion.be. It lists the price as 120 EUR and offers a contact form for ordering.
 - **Compiled:** 2026-10-14. Sources were the upstream repo files, the four schematic PDFs (rendered and read), manufacturer datasheets, the paper and related papers, followed by an adversarial cross-check pass.
 - **Updated:** 2026-10-15, with toolchain facts verified by compiling while building [calibration/](calibration/README.md) (§9.1, §11), and the UF2 bootloader's effect on the motor enable, read from the uf2-samdx1 sources (§4.4, §9.2). Nothing in this update has run on a bot.
+- **Updated:** 2026-10-16, with the first results on a real bot: IR TX polarity and NEC sending bot-to-bot, with one body used as a USB IR remote (`bot_blaster/`; §4.5, §9.1).
 
 **Confidence labels used below.**
 
@@ -16,6 +17,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 | **INFERRED** | Reasoned from sources but not stated anywhere. Treat it as a strong hypothesis. |
 | **UNKNOWN** | No source exists. Measure it on hardware or ask the authors. |
 | **UNTESTED** | Code written for this doc that has not been compiled or run on a bot. |
+| **VERIFIED** | Observed on a real bot. The date and what was seen are given with it. |
 
 ---
 
@@ -331,7 +333,8 @@ void motorSet(uint8_t ch /*0 = RIGHT (D2), 1 = LEFT (D3)*/, float s /*-1..1*/, u
 | **TX** | SAMD `Serial1` TX (D6/PA06) → AVR PC1 → AVR adds the **38 kHz carrier** → PA3 TXMOD → N-FET → **VSMB1940X01** 940 nm LED (±60°, top-emitting) with 27 Ω from **SYS**. LED on-current is about 61 mA at 3.0 V, 106 mA at 4.2 V and 135 mA on USB. Above about 3.9 V on SYS this exceeds the LED's **100 mA DC absolute maximum**; it is within rating only because the carrier pulses it (IFM 200 mA at 50 % duty, tp ≤ 100 µs). A stuck-on TXMOD would overstress the LED. The AVR modulation is stated in the authors' unmerged `readme-graspion-body-proposal` branch. |
 | **RX** | **TSOP75438TT** (38 kHz, AGC4, active-low, "TT" = top-view/lens-up) → D7/PA07 **directly**. The AVR is **not** in the RX path, which contradicts the paper's text. |
 
-- **Polarity** (INFERRED): the carrier is ON while D6 is LOW, so the TSOP output reproduces the UART level. **Keep D6 HIGH when idle.** `Serial1.begin()` already does this; a floating line could key about 100 mA of IR continuously.
+- **Polarity** (VERIFIED 2026-10-16): the carrier is ON while D6 is LOW, so the TSOP output reproduces the UART level. Seen through a phone camera: with D6 driven HIGH the LED stays dark, and it lights during NEC frames. **Keep D6 HIGH when idle.** `Serial1.begin()` already does this; a floating line could key about 100 mA of IR continuously.
+- **Carrier** (VERIFIED 2026-10-16): the AVR modulates the D6 level with a carrier that the TSOP75438 accepts, since a second bot decoded the frames (next bullets). Its frequency and duty were not measured.
 - **Remote control:** the examples decode **NEC** with IRremote (`IrReceiver.begin(7)`). The comments name a Grundig 19935 universal remote with TV code 1359. They check only `decodedIRData.command` and ignore the address, so any NEC remote drives every bot.
 - **`IrReceiver.begin(7)` switches PA07 to GPIO, so Serial1 RX is dead while IRremote runs.** Serial1 TX still works.
 - **UART over IR at 4800 baud** (`Serial1.begin(4800)` in the examples) **violates the TSOP75438 AGC4 limits**, so continuous data will be lost. The limits are:
@@ -342,15 +345,17 @@ void motorSet(uint8_t ch /*0 = RIGHT (D2), 1 = LEFT (D3)*/, float s /*-1..1*/, u
   - the sketch filename at boot (`Serial1.println(__FILE__)`, all three examples);
   - `colors.ino`'s coupling value every 5 s;
   - the mVusb/mVbat values printed by the 0x13 handlers.
-- A plausible but UNTESTED alternative is to send **NEC frames** with IRremote, without starting Serial1; the AVR supplies the carrier:
+- **NEC frames** can be sent with IRremote, without starting Serial1; the AVR supplies the carrier. VERIFIED 2026-10-16 with `bot_blaster/bot_blaster.ino`: one body on USB, held above a second body running an upstream example, sent NEC 0x00 (forward), 0x02/0x03 (turn) and 0x01 (stop), and the second bot obeyed. The setup:
   ```cpp
   #define USE_NO_SEND_PWM     // before #include <IRremote.hpp>
   pinMode(IR_TX, OUTPUT); digitalWrite(IR_TX, HIGH);  // idle level; IrSender.begin() only stores the pin
   IrSender.begin(IR_TX);
   ```
-  With `USE_NO_SEND_PWM`, marks are LOW and spaces HIGH, which matches the inferred polarity.
-- Each bot will probably hear its own transmissions through reflections (INFERRED; check on hardware). **Range and data rate are UNKNOWN.**
-- The receiver faces lens-up and the LED is top-emitting, so bot-to-bot links probably rely on wide angles or reflections (INFERRED). Check on hardware.
+  With `USE_NO_SEND_PWM`, marks are LOW and spaces HIGH, which matches the verified polarity. Details of the test:
+  - Distance and angle were not measured.
+  - The first attempt (3 forward frames) got no reaction; the cause is unknown. A run of 19 frames worked. Send each command several times.
+- Each bot will probably hear its own transmissions through reflections (INFERRED; check on hardware). **Range, frame loss rate and data rate are UNKNOWN.**
+- The receiver faces lens-up and the LED is top-emitting. A link from a bot held above the target works (VERIFIED, above). Bot-to-bot links on the floor probably rely on wide angles or reflections (INFERRED). Check on hardware.
 
 ### 4.6 Sensors on the body
 
@@ -596,7 +601,7 @@ arduino-cli upload  --fqbn graspion:samd:graspionBody:opt=fastest,usbstack=tinyu
 
 The sketch `.ino` must sit in a folder of the same name.
 
-**What was compiled** (2026-10-15): arduino-cli 1.5.2-rc.1 on Windows 11, `graspion:samd` 1.0.0 with its bundled arm-none-eabi-gcc 9-2019q4. Builds only; nothing was flashed or run.
+**What was compiled** (2026-10-15): arduino-cli 1.5.2-rc.1 on Windows 11, `graspion:samd` 1.0.0 with its bundled arm-none-eabi-gcc 9-2019q4. On that date these were builds only; nothing was flashed or run. The `bot_blaster` row was added on 2026-10-16 and was run on a bot.
 
 | Sketch | FQBN options | Result |
 |---|---|---|
@@ -608,8 +613,9 @@ The sketch `.ino` must sit in a folder of the same name.
 | `Serial` without `#include <Adafruit_TinyUSB.h>` (and no library that includes it) | `opt=fastest,usbstack=tinyusb` | **fails to link** |
 | `calibration/blaster/ir_blaster` (ir_blaster/3, protocol 2; IR bridge, not for bots; /3 adds the CAN byte 0x18 line-cancel that the PC's resync sends) | `graspion:samd:adafruit_qtpy_m0:opt=fastest,usbstack=tinyusb` | builds once the TinyUSB header is included: 51,832 B flash |
 | Same sketch, Nano blaster | `arduino:avr:nano` (arduino:avr 1.8.8, not the GRASPion core) | builds: 8,608 B flash, 562 B RAM |
+| `bot_blaster/bot_blaster` (2026-10-16; a body as USB IR remote, ir_blaster's serial protocol; IRremote only) | `opt=fastest,usbstack=tinyusb` | builds: 49,236 B flash. **Flashed and run on a bot**: upload via bossac and verify OK on COM5, serial replies correct, IR received by a second bot (§4.5) |
 
-Not run: `upload` (no bot attached), a whole sketch at `opt=fast`, `opt=faster` or `opt=dragons`, and any sketch with `Adafruit APDS9960 Library` or `Adafruit DMA neopixel library`, which were not installed.
+Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15; `bot_blaster` was flashed on 2026-10-16), a whole sketch at `opt=fast`, `opt=faster` or `opt=dragons`, and any sketch with `Adafruit APDS9960 Library` or `Adafruit DMA neopixel library`, which were not installed.
 
 **Build failures and workarounds** (verified by compiling as above):
 1. **Adafruit BusIO at `opt=fastest`.** BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-O3` and above (`opt=faster`, `opt=fastest`, `opt=dragons`), gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library and for BusIO alone. `Adafruit APDS9960 Library` 1.3.1 includes the same `Adafruit_I2CDevice.h`, so it fails the same way (the library itself was not compiled). Workarounds:
@@ -626,6 +632,7 @@ Not run: `upload` (no bot attached), a whole sketch at `opt=fast`, `opt=faster` 
 - **Upload method:** bossac / SAM-BA with a 1200-baud touch. The app starts at offset 0x2000, above an 8 KB **UF2 bootloader** (QTPY_BOOT drive).
 - **USB ID:** VID 0x239A, PID 0x80CB, shared with the QT Py, so board names are ambiguous in `board list`.
 - **The bot must be ON:** press SW1 once. The battery is optional when USB is connected.
+- **No COM port and no VID 0x239A device at all** while a bot LED blinks: use a cable known to carry data, then power-cycle the bot. Seen on 2026-10-16; after both steps the bot enumerated as `USB Serial Device (COM5)`. Which step fixed it was not isolated.
 - **Bulk flashing:** `examples/upload_all.sh` is Linux-only (`/dev/ttyACM0..19`), recompiles for every bot and uses the wrong FQBN. Better: compile once and loop `arduino-cli upload` over ports with VID 239A, pressing each bot's button first.
 - **Recovery** when a sketch kills USB (INFERRED, standard UF2 behaviour): double-tap X2 pin 10 (RST) to GND (X2 pin 3 or 5) to get the bootloader, or reflash over SWD (X2 pins 2/4/10 + GND). Adding a watchdog helps (`Adafruit SleepyDog Library` supports SAMD).
 - **EN while the bootloader runs.** Which UF2 bootloader a bot carries is UNKNOWN: double-tap RST and read `INFO_UF2.TXT` on the QTPY_BOOT drive.
@@ -676,7 +683,7 @@ Not run: `upload` (no bot attached), a whole sketch at `opt=fast`, `opt=faster` 
 2. **PWM frequency** is 732 Hz against the DRV2603's 10–250 kHz spec (§4.4). 127 is not neutral; **128 is**.
 3. **Motor overdrive:** full scale (254) gives about 3.3 V, the motor's maximum. The rated 2.7 V is about analogWrite 231 (INFERRED).
 4. **Power:** the button only works if the AVR still has SYS. After over-discharge, overcurrent (≥ 400 mA) or ship mode, **only USB revives the bot**.
-5. **IR:** IRremote kills Serial1 RX. 4800-baud UART-over-IR breaks the TSOP AGC4 rules. NEC addresses are ignored. Keep D6 HIGH when idle.
+5. **IR:** IRremote kills Serial1 RX. 4800-baud UART-over-IR breaks the TSOP AGC4 rules. NEC addresses are ignored. Keep D6 HIGH when idle. NEC sent on D6 with IRremote `USE_NO_SEND_PWM` reaches another bot (VERIFIED, §4.5).
 6. **MLX90393:** the address is 0x10, but the library default is 0x0C. `readData()` blocks about 210 ms with the default filter. Motor magnets disturb readings. The Adafruit library does not build at `opt=fastest` (item 18).
 7. **`randomSeed(analogRead(A0))`** gives about 0 in the dark, so all bots get the same sequence, and `randomSeed(0)` is a no-op. Seed from the 128-bit chip serial XOR a few ADC LSBs.
 8. **`analogRead`** is 10-bit unless you call `analogReadResolution(12)`.
@@ -724,7 +731,7 @@ Not run: `upload` (no bot attached), a whole sketch at `opt=fast`, `opt=faster` 
 
 - **AVR firmware:**
   - the full 0x36 register map, including byte 4, and whether writes are accepted;
-  - IR carrier polarity and duty, and the maximum IR baud;
+  - IR carrier frequency and duty, and the maximum IR baud (the polarity is VERIFIED, §4.5);
   - button long-press and power-off behaviour;
   - when it resets the SAMD;
   - its I2C speed limit (does it tolerate 400 kHz?).
