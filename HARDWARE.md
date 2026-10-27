@@ -574,15 +574,16 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 ### 9.1 Board package
 
 - **Index URL:** `https://raw.githubusercontent.com/GRASP-LAB/GRASPion/main/package_graspion_index.json`
-- **Platforms:** `graspion:samd` 1.0.0, built on Adafruit ArduinoCore-samd 1.7.17, and `graspion:nrf52` 1.0.3. The index keeps only the latest version of each.
+- **Platforms:** `graspion:samd` 1.0.1 (installed 2026-10-27; 1.0.0 on 2026-10-15, built on Adafruit ArduinoCore-samd 1.7.17), and `graspion:nrf52` 1.0.3. The index keeps only the latest version of each.
+- **1.0.1 defines `USE_NO_SEND_PWM`** in `graspionBody.build.extra_flags` (`boards.txt`), so every body sketch now sends IR without software PWM: the AVR adds the carrier (§4.5). A sketch that also has `#define USE_NO_SEND_PWM` (as `bot_blaster` does) gets a harmless `"USE_NO_SEND_PWM" redefined` warning; keep the define so the sketch still builds correctly on 1.0.0.
 - **Body FQBN:** `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb`. The menu defaults are `opt=small` (-Os) and `usbstack=arduino`; the README asks for Ofast and TinyUSB.
   - **Exception:** a sketch that uses any library built on Adafruit BusIO does not build at `opt=fastest`, `opt=faster` or `opt=dragons`. That is verified for MLX90393 and for BusIO alone; APDS9960 includes the same BusIO header (not compiled itself). All three upstream examples include `Adafruit_MLX90393.h`, so none of them builds at `opt=fastest`. Use `opt=small,usbstack=tinyusb` for such sketches (verified). `opt=fast` (-O2) is UNTESTED for a whole sketch (see "Build failures" below).
 - The upstream README still says to use "Adafruit QT Py M0", and `examples/upload_all.sh` uses `adafruit:samd:adafruit_qtpy_m0`. **Do not.** That variant drives D12 (motor enable) HIGH at boot while the PWM pins float. The authors' own unmerged README proposal recommends GRASPion Body.
-- **Libraries** (exact Library Manager names). A version means it was compiled for graspionBody on 2026-10-15:
+- **Libraries** (exact Library Manager names). A version means it was compiled for graspionBody on 2026-10-27 (and, except for DMA neopixel and APDS9960, on 2026-10-15):
   - `Adafruit NeoPixel` (1.15.5)
-  - `Adafruit DMA neopixel library` (samd only)
-  - `Adafruit APDS9960 Library` (depends on BusIO, so `opt=small`)
-  - `Adafruit MLX90393` (2.0.5; pulls in `Adafruit SSD1306`; depends on BusIO, so `opt=small`)
+  - `Adafruit DMA neopixel library` (1.3.3; samd only)
+  - `Adafruit APDS9960 Library` (1.3.1; depends on BusIO, so `opt=small`)
+  - `Adafruit MLX90393` (2.0.5; pulls in `Adafruit SSD1306` and `Adafruit GFX Library`; depends on BusIO, so `opt=small`)
   - `Adafruit Unified Sensor` (1.1.15)
   - `Adafruit BusIO` (1.17.4; **fails at `opt=fastest`**)
   - `IRremote` (4.7.1; 4.x API, so pin `IRremote@4.7.1`)
@@ -601,31 +602,43 @@ arduino-cli upload  --fqbn graspion:samd:graspionBody:opt=fastest,usbstack=tinyu
 
 The sketch `.ino` must sit in a folder of the same name.
 
-**What was compiled** (2026-10-15): arduino-cli 1.5.2-rc.1 on Windows 11, `graspion:samd` 1.0.0 with its bundled arm-none-eabi-gcc 9-2019q4. On that date these were builds only; nothing was flashed or run. The `bot_blaster` row was added on 2026-10-16 and was run on a bot.
+**Windows setup used on 2026-10-27** (arduino-cli 1.5.1 from winget `ArduinoSA.CLI`, installed in `C:\Program Files\Arduino CLI` and on the system PATH). The data directory sits outside AppData, at `C:\Users\<you>\Arduino15`, and a user environment variable `ARDUINO_CONFIG_FILE` points arduino-cli at its config there. Reason: shells started by the Claude desktop app have their `AppData\Local` writes redirected into the app's private `AppData\Local\Packages\Claude_…\LocalCache` (tested), so a default `%LOCALAPPDATA%\Arduino15` install from inside the app is invisible to terminals and the Arduino IDE outside it. Libraries go to the default `Documents\Arduino`, which is not redirected. The short path also avoids the MAX_PATH failure (build failure 3 below).
+
+```bash
+arduino-cli config init --dest-file C:\Users\<you>\Arduino15\arduino-cli.yaml
+arduino-cli config set directories.data C:\Users\<you>\Arduino15 --config-file C:\Users\<you>\Arduino15\arduino-cli.yaml
+arduino-cli config set directories.downloads C:\Users\<you>\Arduino15\staging --config-file C:\Users\<you>\Arduino15\arduino-cli.yaml
+```
+
+Then set `ARDUINO_CONFIG_FILE` = `C:\Users\<you>\Arduino15\arduino-cli.yaml` for your account and open a new terminal; `arduino-cli config get directories.data` must print the new folder. Whether a user variable set from inside the Claude app is visible outside it is UNTESTED: check from a Start-menu terminal.
+
+**What was compiled.** On 2026-10-15: arduino-cli 1.5.2-rc.1 on Windows 11, `graspion:samd` 1.0.0 with its bundled arm-none-eabi-gcc 9-2019q4; builds only, nothing was flashed or run. The `bot_blaster` row was added on 2026-10-16 and was run on a bot. On 2026-10-27 the `calib_bot`, MLX90393, `ir_blaster` and `bot_blaster` rows were rebuilt, and the APDS9960 rows added, with arduino-cli 1.5.1, `graspion:samd` 1.0.1 and the library versions above; the BusIO-only, single-file and no-TinyUSB-include rows were not re-run, and nothing has been flashed with that toolchain yet. Flash is arduino-cli's "Sketch uses" figure (.text); RAM is .data + .bss from `arm-none-eabi-size`. Where the two dates differ, the 1.0.0 figure is in parentheses.
 
 | Sketch | FQBN options | Result |
 |---|---|---|
-| `calibration/firmware/calib_bot` (calib_bot/2, protocol 2; IRremote, NeoPixel, Wire; MLX90393 over raw Wire) | `opt=fastest,usbstack=tinyusb` | builds in all four variants: default 732 Hz PWM 60,540 B flash, `-DPWM_40KHZ=1` 60,916 B, `-DBENCH_HANG=1` 60,732 B, `-DUSE_HW_WDT=0` 60,292 B. Static RAM (.data + .bss) 752 + 20,672 = 21,424 B of 32 KB in every variant |
-| Minimal Adafruit MLX90393 sketch | `opt=fastest,usbstack=tinyusb` | **fails**: `lo register required` |
-| Same sketch | `opt=small,usbstack=tinyusb` | builds: 44 KB flash |
+| `calibration/firmware/calib_bot` (calib_bot/2, protocol 2; IRremote, NeoPixel, Wire; MLX90393 over raw Wire) | `opt=fastest,usbstack=tinyusb` | builds in all four variants: default 732 Hz PWM 60,236 B flash (60,540), `-DPWM_40KHZ=1` 60,516 B (60,916), `-DBENCH_HANG=1` 60,372 B (60,732), `-DUSE_HW_WDT=0` 60,108 B (60,292). Static RAM 752 + 21,428 = 22,180 B of 32 KB in every variant (752 + 20,672 = 21,424) |
+| Minimal Adafruit MLX90393 sketch | `opt=fastest,usbstack=tinyusb` | **fails**: `lo register required` (both dates) |
+| Same sketch | `opt=small,usbstack=tinyusb` | builds: 44,264 B flash, 6,712 B RAM |
+| Minimal Adafruit APDS9960 + DMA NeoPixel sketch (2026-10-27 only) | `opt=fastest,usbstack=tinyusb` | **fails**: `lo register required` |
+| Same sketch | `opt=small,usbstack=tinyusb` | builds: 37,812 B flash, 7,212 B RAM |
 | Adafruit BusIO only (`Adafruit_I2CDevice`, no sensor library) | `opt=fastest,usbstack=tinyusb` | **fails**: same error |
 | BusIO's `Adafruit_SPIDevice.cpp` alone, compiled with the core's flags (one file, no link) | `-Os` / `-O2` / `-O3` / `-Ofast` / `-Ofast -funroll-loops` (`opt=small` / `fast` / `faster` / `fastest` / `dragons`) | assembles / assembles / **fails** / **fails** / **fails** |
 | `Serial` without `#include <Adafruit_TinyUSB.h>` (and no library that includes it) | `opt=fastest,usbstack=tinyusb` | **fails to link** |
-| `calibration/blaster/ir_blaster` (ir_blaster/3, protocol 2; IR bridge, not for bots; /3 adds the CAN byte 0x18 line-cancel that the PC's resync sends) | `graspion:samd:adafruit_qtpy_m0:opt=fastest,usbstack=tinyusb` | builds once the TinyUSB header is included: 51,832 B flash |
-| Same sketch, Nano blaster | `arduino:avr:nano` (arduino:avr 1.8.8, not the GRASPion core) | builds: 8,608 B flash, 562 B RAM |
-| `bot_blaster/bot_blaster` (2026-10-16; a body as USB IR remote, ir_blaster's serial protocol; IRremote only) | `opt=fastest,usbstack=tinyusb` | builds: 49,236 B flash. **Flashed and run on a bot**: upload via bossac and verify OK on COM5, serial replies correct, IR received by a second bot (§4.5) |
+| `calibration/blaster/ir_blaster` (ir_blaster/3, protocol 2; IR bridge, not for bots; /3 adds the CAN byte 0x18 line-cancel that the PC's resync sends) | `graspion:samd:adafruit_qtpy_m0:opt=fastest,usbstack=tinyusb` | builds once the TinyUSB header is included: 51,832 B flash (same on both dates), 6,700 B RAM |
+| Same sketch, Nano blaster | `arduino:avr:nano` (arduino:avr 1.8.8, not the GRASPion core) | builds: 8,608 B flash, 562 B RAM (same on both dates) |
+| `bot_blaster/bot_blaster` (2026-10-16; a body as USB IR remote, ir_blaster's serial protocol; IRremote only) | `opt=fastest,usbstack=tinyusb` | builds: 49,308 B flash (49,236), 7,464 B RAM; on 1.0.1 with the `USE_NO_SEND_PWM` redefinition warning (§9.1). **Flashed and run on a bot** (the 1.0.0 build): upload via bossac and verify OK on COM5, serial replies correct, IR received by a second bot (§4.5) |
 
-Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15; `bot_blaster` was flashed on 2026-10-16), a whole sketch at `opt=fast`, `opt=faster` or `opt=dragons`, and any sketch with `Adafruit APDS9960 Library` or `Adafruit DMA neopixel library`, which were not installed.
+Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15; `bot_blaster` was flashed on 2026-10-16), any upload with the 2026-10-27 toolchain, a whole sketch at `opt=fast`, `opt=faster` or `opt=dragons`, and the APDS9960 / DMA NeoPixel sketch on a bot.
 
 **Build failures and workarounds** (verified by compiling as above):
-1. **Adafruit BusIO at `opt=fastest`.** BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-O3` and above (`opt=faster`, `opt=fastest`, `opt=dragons`), gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library and for BusIO alone. `Adafruit APDS9960 Library` 1.3.1 includes the same `Adafruit_I2CDevice.h`, so it fails the same way (the library itself was not compiled). Workarounds:
+1. **Adafruit BusIO at `opt=fastest`.** BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-O3` and above (`opt=faster`, `opt=fastest`, `opt=dragons`), gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library, for BusIO alone and (2026-10-27) for `Adafruit APDS9960 Library` 1.3.1, which includes the same `Adafruit_I2CDevice.h`. Workarounds:
    - build with **`opt=small`** (-Os; verified with a whole MLX90393 sketch). This applies to the whole sketch and core, not just BusIO;
    - `opt=fast` (-O2) costs less speed, but only the failing file was shown to assemble at -O2: a whole sketch at `opt=fast` is UNTESTED;
    - or drive the device over `Wire` directly, as `calibration/firmware/calib_bot/calib_bot.ino` does for the MLX90393 (datasheet command set, register layout from the Adafruit library; about 80 lines).
    - A `"+l"` (low-register) constraint in the core's `delay.h` should fix it at the source (INFERRED; not verified, and it means editing the installed core).
    - The root cause is the core's inlined `delayMicroseconds`, so in principle any file calling it can hit this at `-O3` or above; BusIO is the known case (INFERRED).
 2. **TinyUSB include.** With `usbstack=tinyusb`, a sketch whose build never includes `<Adafruit_TinyUSB.h>` fails to link with `undefined reference to 'Serial'` and `Adafruit_USBD_CDC::begin`. The core's `Arduino.h` only declares `Serial`; `main.cpp` calls `TinyUSB_Device_Init` from the bundled TinyUSB library, which arduino-cli links only when the header reaches the build: from the sketch, or from a library header that includes it. `Adafruit_NeoPixel.h` 1.15.5 does so under `USE_TINYUSB` (lines 42-43), so a NeoPixel sketch probably links without its own include (INFERRED from the sources; not built). Include it explicitly in every sketch anyway. The link failure was seen on both `graspionBody` and `adafruit_qtpy_m0` of this core.
-3. **Long paths on Windows.** If the arduino-cli data directory sits under a long path, gcc fails with `cannot execute 'cc1plus'` (Windows MAX_PATH). Keep the default `%LOCALAPPDATA%\Arduino15`, or map a short drive letter with `subst` and point `directories.data` there.
+3. **Long paths on Windows.** If the arduino-cli data directory sits under a long path, gcc fails with `cannot execute 'cc1plus'` (Windows MAX_PATH). Keep the data directory on a short path: the default `%LOCALAPPDATA%\Arduino15`, `C:\Users\<you>\Arduino15` (needed when installing from inside the Claude app; see the Windows setup above), or a short `subst` drive letter, with `directories.data` pointing there.
 
 ### 9.2 Upload, bootloader and recovery
 
@@ -782,7 +795,7 @@ Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15
   - Adafruit_nRF52_Arduino 1.7.0
   - IRremote 4.7.1
   - Adafruit MLX90393, APDS9960 and SPIFlash libraries
-- **Build tests** (§9.1): arduino-cli 1.5.2-rc.1 with graspion:samd 1.0.0 (and arduino:avr 1.8.8 for the blaster's Nano build), Adafruit MLX90393 2.0.5, Adafruit BusIO 1.17.4, IRremote 4.7.1 and Adafruit NeoPixel 1.15.5, 2026-10-15; the library dependency lists come from the Arduino library index. The sketches are in [calibration/](calibration/README.md) (calib_bot/2, ir_blaster/3, protocol 2, recompiled after the last review fixes), plus minimal MLX90393, BusIO-only and no-TinyUSB-include test sketches.
+- **Build tests** (§9.1): arduino-cli 1.5.2-rc.1 with graspion:samd 1.0.0 (and arduino:avr 1.8.8 for the blaster's Nano build), Adafruit MLX90393 2.0.5, Adafruit BusIO 1.17.4, IRremote 4.7.1 and Adafruit NeoPixel 1.15.5, 2026-10-15; the library dependency lists come from the Arduino library index. The sketches are in [calibration/](calibration/README.md) (calib_bot/2, ir_blaster/3, protocol 2, recompiled after the last review fixes), plus minimal MLX90393, BusIO-only and no-TinyUSB-include test sketches. Rebuilt 2026-10-27 with arduino-cli 1.5.1, graspion:samd 1.0.1 (its `boards.txt` is the source for the `USE_NO_SEND_PWM` flag), Adafruit APDS9960 1.3.1 and Adafruit DMA neopixel 1.3.3 added (§9.1 lists which rows).
 - **Papers and site:**
   - RSI 97, 014704 (2026) / arXiv:2509.07437 / ULiège postprint
   - Noirhomme et al., PR Applied 23, 064008 (2025)
