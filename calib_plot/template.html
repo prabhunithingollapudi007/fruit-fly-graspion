@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration paths</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ctx: #b4b2a9; --band: #eef4fc;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ctx: #5f5e5a; --band: #1d2a3a;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --ctx: #5f5e5a; --band: #1d2a3a;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 40px; }
+h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+.sub { color: var(--ink2); margin: 0 0 20px; max-width: 760px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 28px 32px; }
+.panel h2 { font-size: 15px; font-weight: 500; margin: 0 0 2px; }
+.panel p { color: var(--ink2); font-size: 13px; margin: 0 0 8px; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--ink2); margin: 0 0 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.sw.box { height: 10px; width: 10px; }
+.wrap { position: relative; }
+svg { display: block; width: 100%; height: auto; overflow: visible; }
+svg text { fill: var(--muted); font-size: 11px; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 0.5px solid var(--axis); border-radius: 6px; padding: 6px 8px; font-size: 12px; color: var(--ink); white-space: nowrap; opacity: 0; transition: opacity .1s; z-index: 2; }
+.wide { grid-column: 1 / -1; }
+.note { color: var(--muted); font-size: 12px; margin-top: 20px; }
+</style>
+</head>
+<body>
+<main>
+<h1>What a calibration run looks like</h1>
+<p class="sub">__SUB__</p>
+<div class="grid">
+  <section class="panel">
+    <h2>The whole grid session in the arena</h2>
+    <p>Each drive segment starts near the centre; the scheduler re-centres the bot in between.</p>
+    <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>Drive segment</span><span><i class="sw" style="background:var(--ctx)"></i>Rest and re-centring</span><span><i class="sw" style="background:none;border-top:1px dashed var(--axis);height:0"></i>Geofence margin</span></div>
+    <div class="wrap" id="wA"><svg id="A" viewBox="0 0 400 400" role="img" aria-label="Top view of the bot's path over one grid block"></svg><div class="tip"></div></div>
+  </section>
+  <section class="panel">
+    <h2>Every segment from the same start pose</h2>
+    <p>Each drive path rotated so the bot starts at the dot, facing up. One curve per drive segment.</p>
+    <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>L &gt; R</span><span><i class="sw" style="background:var(--s2)"></i>L &lt; R</span><span><i class="sw" style="background:var(--s3)"></i>L = R</span></div>
+    <div class="wrap" id="wB"><svg id="B" viewBox="0 0 400 400" role="img" aria-label="Drive segments overlaid in the bot's start frame"></svg><div class="tip"></div></div>
+  </section>
+  <section class="panel wide">
+    <h2>Commands over the first 80 s of the grid session</h2>
+    <p>Fixed grid values in shuffled order. Each command is held for 3 s; the gaps are the 0.8 s rest plus re-centring.</p>
+    <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>L (left motor)</span><span><i class="sw" style="background:var(--s2)"></i>R (right motor)</span><span><i class="sw box" style="background:var(--band)"></i>Drive segment</span></div>
+    <div class="wrap" id="wC"><svg id="C" viewBox="0 0 1000 220" role="img" aria-label="Left and right motor commands over time"></svg><div class="tip"></div></div>
+  </section>
+  <section class="panel">
+    <h2>One PRBS segment: commands</h2>
+    <p>Random levels switching every 0.1–0.5 s excite the lag and dead time.</p>
+    <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>L</span><span><i class="sw" style="background:var(--s2)"></i>R</span></div>
+    <div class="wrap" id="wD"><svg id="D" viewBox="0 0 400 220" role="img" aria-label="PRBS command levels over 3 seconds"></svg><div class="tip"></div></div>
+  </section>
+  <section class="panel">
+    <h2>One PRBS segment: path</h2>
+    <p>The same 3 s segment in the arena. Dots mark each level switch.</p>
+    <div class="wrap" id="wE"><svg id="E" viewBox="0 0 400 220" role="img" aria-label="Path of the PRBS segment"></svg><div class="tip"></div></div>
+  </section>
+</div>
+<p class="note">Made by <code>calib_plot/plot_paths.py</code> from tracker.csv and segments.csv.</p>
+</main>
+<script>
+const D = __DATA__;
+const NS = 'http://www.w3.org/2000/svg';
+const el = (p, tag, a) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); p.appendChild(e); return e; };
+const txt = (p, x, y, s, a = {}) => { const t = el(p, 'text', { x, y, ...a }); t.textContent = s; return t; };
+const poly = (pts, sx, sy) => { let s = ''; for (let i = 0; i < pts.length; i += 2) s += (i ? 'L' : 'M') + sx(pts[i]).toFixed(1) + ',' + sy(pts[i + 1]).toFixed(1); return s; };
+function tip(wrapId) {
+  const w = document.getElementById(wrapId), t = w.querySelector('.tip');
+  return { show(html, ev) { t.innerHTML = html; t.style.opacity = 1; const r = w.getBoundingClientRect(); let x = ev.clientX - r.left + 12, y = ev.clientY - r.top + 12; if (x + t.offsetWidth > r.width) x -= t.offsetWidth + 24; t.style.left = x + 'px'; t.style.top = y + 'px'; }, hide() { t.style.opacity = 0; } };
+}
+const cls = (L, R) => L > R ? 'var(--s1)' : L < R ? 'var(--s2)' : 'var(--s3)';
+
+(function arena() {
+  const s = document.getElementById('A'), T = tip('wA');
+  const [ax0, ay0, ax1, ay1, m] = D.arena, P = 20, W = 360, k = W / Math.max(ax1 - ax0, ay1 - ay0);
+  const sx = v => P + (v - ax0) * k, sy = v => P + W - (v - ay0) * k;
+  for (let g = Math.ceil(ax0 / 250) * 250; g <= ax1; g += 250) el(s, 'line', { x1: sx(g), x2: sx(g), y1: sy(ay0), y2: sy(ay1), stroke: 'var(--grid)' });
+  for (let g = Math.ceil(ay0 / 250) * 250; g <= ay1; g += 250) el(s, 'line', { y1: sy(g), y2: sy(g), x1: sx(ax0), x2: sx(ax1), stroke: 'var(--grid)' });
+  el(s, 'rect', { x: sx(ax0), y: sy(ay1), width: (ax1 - ax0) * k, height: (ay1 - ay0) * k, fill: 'none', stroke: 'var(--axis)' });
+  if (m > 0) el(s, 'rect', { x: sx(ax0 + m), y: sy(ay1 - m), width: (ax1 - ax0 - 2 * m) * k, height: (ay1 - ay0 - 2 * m) * k, fill: 'none', stroke: 'var(--axis)', 'stroke-dasharray': '4 4' });
+  txt(s, sx(ax0), sy(ay0) + 14, (ax0 / 1000) + ' m'); txt(s, sx(ax1), sy(ay0) + 14, (ax1 / 1000) + ' m', { 'text-anchor': 'end' });
+  for (const [t, p] of D.path) if (t < 0) el(s, 'path', { d: poly(p, sx, sy), fill: 'none', stroke: 'var(--ctx)', 'stroke-width': 1, 'stroke-linejoin': 'round' });
+  const drives = [];
+  for (const [t, p] of D.path) if (t >= 0) drives.push([t, el(s, 'path', { d: poly(p, sx, sy), fill: 'none', stroke: 'var(--s1)', 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }), p]);
+  for (const [t, line, p] of drives) {
+    const hit = el(s, 'path', { d: poly(p, sx, sy), fill: 'none', stroke: 'transparent', 'stroke-width': 10, style: 'cursor:default' });
+    const [L, R] = D.segs[t];
+    hit.addEventListener('mousemove', e => { line.setAttribute('stroke-width', 3.5); T.show(`Segment ${t + 1} · L ${L}, R ${R}`, e); });
+    hit.addEventListener('mouseleave', () => { line.setAttribute('stroke-width', 1.5); T.hide(); });
+  }
+})();
+
+(function fan() {
+  const s = document.getElementById('B'), T = tip('wB');
+  const r = 300, c = 200, k = 180 / r, sx = v => c + v * k, sy = v => 290 - v * k;
+  for (let g = -300; g <= 300; g += 100) { el(s, 'line', { x1: sx(g), x2: sx(g), y1: 20, y2: 380, stroke: 'var(--grid)' }); }
+  for (let g = -100; g <= 300; g += 100) { el(s, 'line', { y1: sy(g), y2: sy(g), x1: 20, x2: 380, stroke: 'var(--grid)' }); txt(s, 16, sy(g) + 4, (g / 100 * 10) + ' cm', { 'text-anchor': 'end' }); }
+  const lines = D.fan.map(([L, R, p]) => {
+    const line = el(s, 'path', { d: poly(p, sx, sy), fill: 'none', stroke: cls(L, R), 'stroke-width': 1.5, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-opacity': 0.85 });
+    const n = p.length, d = Math.hypot(p[n - 2], p[n - 1]) / 10;
+    return { L, R, p, line, d };
+  });
+  for (const o of lines) {
+    const hit = el(s, 'path', { d: poly(o.p, sx, sy), fill: 'none', stroke: 'transparent', 'stroke-width': 8 });
+    hit.addEventListener('mousemove', e => { o.line.setAttribute('stroke-width', 3.5); o.line.setAttribute('stroke-opacity', 1); T.show(`L ${o.L}, R ${o.R} · ends ${o.d.toFixed(1)} cm from start`, e); });
+    hit.addEventListener('mouseleave', () => { o.line.setAttribute('stroke-width', 1.5); o.line.setAttribute('stroke-opacity', 0.85); T.hide(); });
+  }
+  el(s, 'circle', { cx: sx(0), cy: sy(0), r: 5, fill: 'var(--ink)', stroke: 'var(--surface)', 'stroke-width': 2 });
+  el(s, 'path', { d: `M${sx(0)},${sy(0) - 10}l-4,7h8z`, fill: 'var(--ink)' });
+})();
+
+function steps(s, T, segs, t0, t1, box, band, fmtT) {
+  const [x0, y0, w, h] = box, sx = t => x0 + (t - t0) / (t1 - t0) * w, sy = v => y0 + h / 2 - v / 130 * h / 2;
+  if (band) for (const [, , a, b] of segs) if (b > t0 && a < t1) el(s, 'rect', { x: sx(Math.max(a, t0)), y: y0, width: sx(Math.min(b, t1)) - sx(Math.max(a, t0)), height: h, fill: 'var(--band)' });
+  for (const v of [-120, -60, 60, 120]) { el(s, 'line', { x1: x0, x2: x0 + w, y1: sy(v), y2: sy(v), stroke: 'var(--grid)' }); txt(s, x0 - 6, sy(v) + 4, v, { 'text-anchor': 'end' }); }
+  el(s, 'line', { x1: x0, x2: x0 + w, y1: sy(0), y2: sy(0), stroke: 'var(--axis)' }); txt(s, x0 - 6, sy(0) + 4, '0', { 'text-anchor': 'end' });
+  const nt = fmtT.ticks; for (const t of nt) txt(s, sx(t), y0 + h + 16, fmtT.f(t), { 'text-anchor': 'middle' });
+  const val = (t, j) => { for (const sg of segs) if (t >= sg[2] && t < sg[3]) return sg[j]; return 0; };
+  for (const [j, col] of [[0, 'var(--s1)'], [1, 'var(--s2)']]) {
+    let d = `M${sx(t0)},${sy(0)}`, prev = 0;
+    for (const sg of segs) { if (sg[3] <= t0 || sg[2] >= t1) continue; const a = Math.max(sg[2], t0), b = Math.min(sg[3], t1);
+      d += `H${sx(a).toFixed(1)}V${sy(sg[j]).toFixed(1)}H${sx(b).toFixed(1)}V${sy(0)}`; }
+    d += `H${sx(t1)}`;
+    el(s, 'path', { d, fill: 'none', stroke: col, 'stroke-width': 2, 'stroke-linejoin': 'round', transform: j ? 'translate(0,1.5)' : 'translate(0,-1.5)' });
+  }
+  const cross = el(s, 'line', { y1: y0, y2: y0 + h, stroke: 'var(--axis)', opacity: 0 });
+  const hit = el(s, 'rect', { x: x0, y: y0, width: w, height: h, fill: 'transparent' });
+  hit.addEventListener('mousemove', e => {
+    const pt = s.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY; const p = pt.matrixTransform(s.getScreenCTM().inverse());
+    const t = t0 + (p.x - x0) / w * (t1 - t0); cross.setAttribute('x1', p.x); cross.setAttribute('x2', p.x); cross.setAttribute('opacity', 1);
+    const inSeg = segs.some(sg => t >= sg[2] && t < sg[3]);
+    T.show(`t = ${t.toFixed(2)} s · ${inSeg ? `L ${val(t, 0)}, R ${val(t, 1)}` : (band ? 'rest / re-centring' : 'stopped')}`, e);
+  });
+  hit.addEventListener('mouseleave', () => { cross.setAttribute('opacity', 0); T.hide(); });
+  return sx;
+}
+
+steps(document.getElementById('C'), tip('wC'), D.segs, 0, 80, [44, 10, 940, 180], true, { ticks: [0, 10, 20, 30, 40, 50, 60, 70, 80], f: t => t + ' s' });
+
+(function prbs() {
+  const lv = D.prbs.levels, dur = D.prbs.dur;
+  const segs = lv.map((l, i) => [l[1], l[2], l[0], i + 1 < lv.length ? lv[i + 1][0] : dur]);
+  steps(document.getElementById('D'), tip('wD'), segs, 0, dur, [44, 10, 346, 180], false, { ticks: [0, 0.5, 1, 1.5, 2, 2.5, 3], f: t => t + ' s' });
+  const s = document.getElementById('E'), T = tip('wE'), p = D.prbs.p;
+  let xs = [], ys = []; for (let i = 0; i < p.length; i += 2) { xs.push(p[i]); ys.push(p[i + 1]); }
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const span = Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...ys) - Math.min(...ys)) * 2) * 1.25, k = 360 / span;
+  const sx = v => 200 + (v - cx) * k, sy = v => 105 - (v - cy) * k;
+  const gstep = 50; for (let g = Math.ceil((cx - span / 2) / gstep) * gstep; g < cx + span / 2; g += gstep) el(s, 'line', { x1: sx(g), x2: sx(g), y1: 10, y2: 200, stroke: 'var(--grid)' });
+  for (let g = Math.ceil((cy - 95 / k) / gstep) * gstep; g < cy + 95 / k; g += gstep) el(s, 'line', { y1: sy(g), y2: sy(g), x1: 20, x2: 380, stroke: 'var(--grid)' });
+  el(s, 'line', { x1: 300, x2: 300 + gstep * k, y1: 212, y2: 212, stroke: 'var(--muted)', 'stroke-width': 1.5 }); txt(s, 300 + gstep * k / 2, 208, '5 cm', { 'text-anchor': 'middle' });
+  el(s, 'path', { d: poly(p, sx, sy), fill: 'none', stroke: 'var(--s1)', 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+  const n = xs.length;
+  lv.forEach(([t, L, R], i) => {
+    const j = Math.min(n - 1, Math.round(t / dur * (n - 1)));
+    const c = el(s, 'circle', { cx: sx(xs[j]), cy: sy(ys[j]), r: i ? 4 : 5, fill: i ? 'var(--s1)' : 'var(--ink)', stroke: 'var(--surface)', 'stroke-width': 2 });
+    const h = el(s, 'circle', { cx: sx(xs[j]), cy: sy(ys[j]), r: 10, fill: 'transparent' });
+    h.addEventListener('mousemove', e => T.show(`${i ? 'Switch' : 'Start'} at ${t.toFixed(2)} s → L ${L}, R ${R}`, e));
+    h.addEventListener('mouseleave', () => T.hide());
+  });
+})();
+</script>
+</body>
+</html>
