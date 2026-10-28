@@ -19,11 +19,6 @@ def wrap(a):
     return float(out) if np.ndim(a) == 0 else out
 
 
-def rot(theta):
-    c, s = np.cos(theta), np.sin(theta)
-    return np.array([[c, -s], [s, c]])
-
-
 def transfer_twist(u1, u2, omega, r):
     """Twist of the point P + r (r in the body frame) from the twist of P: u' = u + omega z x r."""
     return u1 - omega * r[1], u2 + omega * r[0], omega

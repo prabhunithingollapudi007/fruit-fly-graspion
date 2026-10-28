@@ -11,7 +11,7 @@ Tooling to measure each GRASPion's map from motor drive (L, R) to body motion (u
 >   - Libraries: IRremote 4.7.1, Adafruit NeoPixel 1.15.5.
 >   - Both sketches include the protocol-2 `static_assert` vectors, so the C header and the Python mirror agree on ARM and AVR.
 >   - **Rebuilt 2026-10-27** with arduino-cli 1.5.1, graspion:samd **1.0.1** and IRremote 4.7.1: all four `calib_bot` variants build (60,236 / 60,516 / 60,372 / 60,108 B flash for default / `PWM_40KHZ` / `BENCH_HANG` / `USE_HW_WDT=0`; static RAM 752 + 21,428 = 22,180 B), and `ir_blaster` builds unchanged (Nano 8,608 B, QT Py M0 51,832 B). Sizes per toolchain are in HARDWARE.md §9.1.
-> - **124 offline tests** (Python 3.12, numpy 2.3.5, scipy 1.15.2, OpenCV 4.13): 123 pass, and 1 is skipped unless `GRASPION_TILEMAT_SIM` is set (§4). They cover:
+> - **125 offline tests** (run 2026-10-28 with Python 3.14.0, numpy 2.5.4, scipy 1.18.1, OpenCV 5.0.0): 124 pass, and 1 is skipped unless `GRASPION_TILEMAT_SIM` is set (§4). They cover:
 >   - protocol and CRC, including every on-air burst of up to 5 bits, cross-checked against the C header through compile-time `static_assert` vectors (compiled on ARM and AVR);
 >   - the twist/ICR fit on EllipticalBot2D trajectories. The skipped test is the one against the user's own `Ellipse2dObj.EllipticalBot2D`, imported read-only;
 >   - tracking on rendered scenes (including mono cameras, LED-height parallax, reference survey errors, a homography published only after its checks, and rate-limited "reference off" warnings), the `track` command (LED height and camera height from the rig config, reference summary, warnings) and ChArUco intrinsics on rendered views;
@@ -242,7 +242,7 @@ Run the commands below from `calibration/pc`.
 python -m graspion_calib selftest
 ```
 
-`selftest` runs the offline suite (124 tests) in about 80 s. One test is skipped by default: it checks the twist fit against your own simulator class. To run it, set `GRASPION_TILEMAT_SIM=<tilemat_control_stack>/robots/elliptical_bot/controllers/mpc/acados_simple`. That environment needs a working matplotlib, because `Ellipse2dObj.py` imports it; otherwise the test stays skipped.
+`selftest` runs the offline suite (125 tests) in about 2 min. One test is skipped by default: it checks the twist fit against your own simulator class. To run it, set `GRASPION_TILEMAT_SIM=<tilemat_control_stack>/robots/elliptical_bot/controllers/mpc/acados_simple`. That environment needs a working matplotlib, because `Ellipse2dObj.py` imports it; otherwise the test stays skipped.
 
 A dry run of the whole loop on the simulated rig:
 
@@ -416,7 +416,8 @@ python -m graspion_calib analyze sessions/bot90_grid_a sessions/bot90_grid_b ses
 7. **Noise** (`noise.py`):
    - heading diffusion from second differences of the heading, which cancel any constant ω exactly, so short segments with different ω pool without bias; an OU fit for long runs. Drive runs stop where the commanded drive stopped acting (bot-log trip time, or 0.3 s before a visible stop), so the constant-ω premise holds;
    - measurement noise from static runs (with `n_spikes`, the heading spikes dropped);
-   - lateral slip u2.
+   - lateral slip u2 over all segments;
+   - per steady circle run (`noise.circle_jitter`): speed jitter and lateral slip, the SD of the body velocity (0.2 s Savitzky–Golay window) around the twist fitted to the same window.
 
 **Outputs** in `--out`:
 - `segments_fit.csv`

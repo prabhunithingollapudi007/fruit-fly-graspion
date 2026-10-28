@@ -27,7 +27,7 @@ import numpy as np
 from . import protocol as P
 from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, RECORD_GAP_S, BridgeError, SendRecord, nec_frame_s
 from .forward_map import PowerLawMap
-from .geometry import BotGeometry, transfer_twist, wrap
+from .geometry import BotGeometry, wrap
 from .poses import Detection, PoseStore
 
 
@@ -377,10 +377,6 @@ class SimWorld:
     def truth_twist_at_reference(self, bot_id, L, R):
         """Steady-state twist of the bot's reference point (the CoM in this simulator)."""
         return self.plants[bot_id].truth_twist_com(L, R)
-
-    def truth_twist_at_marker(self, bot_id, L, R):
-        u1, u2, w = self.truth_twist_at_reference(bot_id, L, R)
-        return transfer_twist(u1, u2, w, self.params[bot_id].geometry.marker_offset)
 
 
 class SimBridge:

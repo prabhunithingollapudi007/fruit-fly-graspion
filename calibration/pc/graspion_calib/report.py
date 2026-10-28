@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import botlog, dynamics, extract, forward_map, inverse_map, noise
+from . import botlog, dynamics, extract, forward_map, inverse_map, noise, twist
 
 
 def _usable(rows, tags_exclude=("circle",)):
@@ -57,6 +57,24 @@ def noise_runs(segs, settle_s=0.5, margin_s=0.3):
     return heading, circle, statics
 
 
+def circle_jitter(segs, settle_s=0.5, margin_s=0.3):
+    """Speed jitter and lateral slip of each steady circle run (FEASIBILITY.md 5.2 step 6): the SD of the
+    body-frame velocity around the twist fitted to the same window (noise.velocity_jitter)."""
+    out = []
+    for s in segs:
+        if s.kind != "drive" or s.tag != "circle" or s.status not in extract.USABLE or len(s.levels) > 2:
+            continue
+        t0, t1, _ = extract.steady_window(s, settle_s, margin_s)
+        m = (s.t >= t0) & (s.t <= t1)
+        if m.sum() <= 20:
+            continue
+        tw = twist.fit_twist(s.t[m], s.x[m], s.y[m], s.th[m])
+        j = noise.velocity_jitter(s.t[m], s.x[m], s.y[m], s.th[m], tw["u1"], tw["u2"], tw["omega"])
+        out.append({"seg": s.seg, "L": s.L, "R": s.R, "u1": tw["u1"], "u2": tw["u2"],
+                    "omega": tw["omega"], **j})
+    return out
+
+
 def dynamics_segments(seg_lists, fwd, settle_s=0.5, v_bat=None):
     """DynSegments for the lag fit (step / PRBS segments and non-circle drive segments) and the number skipped
     because the bot abandoned them early: the model assumes the commanded levels act until the STOP. A step down
@@ -79,7 +97,7 @@ def analyze(session_dirs, out_dir, gp=False, bootstrap_n=50, settle_s=0.5, p_min
     """p_min=None: per motor max(60, p0 + 5) (inverse_map.InverseMap), so a large dead zone still gets an inverse."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    all_rows, link, offsets, merges, statics, heading_runs, circle_runs = [], [], [], [], [], [], []
+    all_rows, link, offsets, merges, statics, heading_runs, circle_runs, jitter = [], [], [], [], [], [], [], []
     seg_lists, notes = [], []
     sessions = [extract.load_session(sd) for sd in session_dirs]
     cmd_offs = [extract.command_offset(s) for s in sessions]
@@ -116,6 +134,7 @@ def analyze(session_dirs, out_dir, gp=False, bootstrap_n=50, settle_s=0.5, p_min
         heading_runs += h
         circle_runs += c
         statics += st
+        jitter += [{"session": Path(sd).name, **j} for j in circle_jitter(segs, settle_s)]
         seg_lists.append(segs)
     extract.write_rows(all_rows, out / "segments_fit.csv")
 
@@ -195,7 +214,7 @@ def analyze(session_dirs, out_dir, gp=False, bootstrap_n=50, settle_s=0.5, p_min
         "dead_time_includes_cam_offset": not offset_measured,
         "noise": {"heading_segments": noise.heading_diffusion(heading_runs, max_lag_s=0.5, ou=False),
                   "heading_long_runs": noise.heading_diffusion(circle_runs, max_lag_s=2.0, ou=True) if circle_runs else None,
-                  "static": statics,
+                  "static": statics, "circle_jitter": jitter,
                   "segment_pos_rms_median": float(np.median([r["pos_rms"] for r in use])),
                   "lateral_u2_median": float(np.median(Y[:, 1])), "lateral_u2_sd": float(np.std(Y[:, 1]))},
         "icr": icr,

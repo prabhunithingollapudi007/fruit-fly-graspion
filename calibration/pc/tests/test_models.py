@@ -186,6 +186,22 @@ class TestNoise(unittest.TestCase):
         self.assertLess(st["sd_th"], 0.01)
         self.assertEqual(st["n_spikes"], 1)
 
+    def test_velocity_jitter(self):
+        """A constant twist gives ~0 jitter; a 0.5 Hz speed modulation of amplitude a gives sd_u1 ~ a / sqrt 2."""
+        dt, a = 1 / 60, 0.01
+        t = np.arange(0, 20, dt)
+        for amp in (0.0, a):
+            u1 = 0.08 + amp * np.sin(2 * np.pi * 0.5 * t)
+            th = 1.2 * t
+            x = np.cumsum(u1 * np.cos(th)) * dt
+            y = np.cumsum(u1 * np.sin(th)) * dt
+            j = noise.velocity_jitter(t, x, y, th, 0.08, 0.0, 1.2)
+            if amp == 0:
+                self.assertLess(max(j["sd_u1"], j["sd_u2"], j["sd_omega"]), 2e-3)
+            else:
+                self.assertAlmostEqual(j["sd_u1"] / (a / np.sqrt(2)), 1.0, delta=0.15)
+                self.assertLess(j["sd_u2"], 2e-3)
+
     def test_ou_fit(self):
         rng = np.random.default_rng(4)
         dt, n, tc, s2 = 1 / 60, 60 * 120, 0.4, 0.05

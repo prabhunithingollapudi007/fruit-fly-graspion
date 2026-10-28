@@ -200,7 +200,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 **Provenance of the 7×7 tables** (checked 2026-10-28):
 - The original fit is in github.com/prajolshrestha/mpc_and_imitation_learning_deployment_src @ 1c2d6a0 (March 2026), `imitation_learning_mcu_deployment_src/task/circle/acados_simple/fitting/`: quadratic v and quadratic ω. The twin's ω coefficients in `gen_inverse_map.py` are the same fit.
 - The ω tables are identical in both repos. The twin's `vCOM_table_latest.npy` is re-processed: every cell is 0.01–0.10 cm/s (0.1–0.9 %) lower.
-- **Layouts differ.** The repo files have rows = right power *decreasing* (120 at the top) and columns = left power increasing; both fitting scripts assume that (`L.T`, `np.rot90(R)`), and their "rows = left" comment is wrong. A third copy of the same tables (`power.npy`, `velocity_table.npy`, `omega_table.npy`, held locally, not in the repo) is the same data with the rows flipped (`np.flipud`): `[i, j]` = (R = p[i], L = p[j]). Feeding that copy to the scripts unflipped mirrors the fit in R.
+- **Layouts differ.** The repo files have rows = right power *decreasing* (120 at the top) and columns = left power increasing; both fitting scripts assume that (`L.T`, `np.rot90(R)`), and their "rows = left" comment is wrong. A third copy of the same tables, received from the lab and kept in [lab_fit/data/](lab_fit/data), is the same data with the rows flipped (`np.flipud`): `[i, j]` = (R = p[i], L = p[j]). Feeding that copy to the scripts unflipped mirrors the fit in R. `lab_fit/fit_lab_tables.py` reads it, checks the layout and fits our models to it.
 - Older deployment sketches did not use the fit: they used a linear map with half-track widths 1.61 / 1.45 cm and powers 56–75 (HARDWARE.md §6.2).
 
 **Gaps:**
@@ -218,7 +218,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 ### 5.2 Protocol (UNTESTED design)
 
-**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (124 tests; 123 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
+**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (125 tests; 124 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
 
 **Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the PC re-centres the bot between segments. The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
 
@@ -508,7 +508,7 @@ The VLA never outputs motor powers, so its actions mean the same on every bot. O
 - **Lab code:**
   - github.com/GRASP-LAB/brainbot-digital-twin @ 9ee0aa8 (`generate_LUT/*`, `tinympc_deployment_code/*`, `bot_simulation/*`);
   - github.com/prajolshrestha/mpc_and_imitation_learning_deployment_src @ 1c2d6a0 (`imitation_learning_mcu_deployment_src/task/circle/acados_simple/fitting/*`, `mpc_mcu_deployment_src/task/figure8/acados/*`, `old_stuff/**/*.ino`).
-- **Calibration tooling:** [calibration/](calibration/README.md) (commit fa28d91), in particular `pc/graspion_calib/forward_map.py` (CoR identifiability) and `sim.py` (the simulated rig).
+- **Calibration tooling:** [calibration/](calibration/README.md) (the current tree; first added in commit fa28d91), in particular `pc/graspion_calib/forward_map.py` (CoR identifiability) and `sim.py` (the simulated rig).
 - **Hardware:** [HARDWARE.md](HARDWARE.md).
 - **Per-operation costs and protocol facts:**
   - Qfplib-M0 cycle table;

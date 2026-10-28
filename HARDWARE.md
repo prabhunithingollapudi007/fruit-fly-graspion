@@ -37,7 +37,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 | Storage | W25Q16JV, 16 Mbit = **2 MB** SPI NOR flash on SPI1 |
 | Power | Li-ion coin cell (the v1 schematic names **LIR2477**, typically 160–200 mAh). STNS01 charger/LDO, USB-C sink, runtime **> 90 min** (paper), 3.1 V logic rail. |
 | Speed | Up to **16 cm/s** (paper Fig. 1a) or about 15 cm/s (README). Typical calibrated range is 4.7–11.5 cm/s. |
-| Toolchain | Arduino. FQBN **`graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb`**, but `opt=small` for any sketch using an Adafruit BusIO-based library (MLX90393, APDS9960, so all three upstream examples; item 9, §9.1). Boards Manager URL: `https://raw.githubusercontent.com/GRASP-LAB/GRASPion/main/package_graspion_index.json` |
+| Toolchain | Arduino. FQBN **`graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb`**, but `opt=small` for any sketch using an Adafruit BusIO-based library (MLX90393, APDS9960, so all three upstream examples; item 8). Boards Manager URL: `https://raw.githubusercontent.com/GRASP-LAB/GRASPion/main/package_graspion_index.json` |
 | Head board 2026 (in development) | STM32U575 + u-blox ANNA-B112 (nRF52832, BLE) + I2S MEMS mic. It plugs into the same 10-pin connector. There is no STM32 firmware yet. |
 
 **Top gotchas.** Section 11 has the full list.
@@ -48,8 +48,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 5. `IrReceiver.begin(7)` kills Serial1 RX. A continuous 4800-baud UART over IR violates the TSOP's burst rules.
 6. MLX90393 sits at **0x10**, but the Adafruit library defaults to 0x0C. Always pass the address.
 7. With TinyUSB, `#include <Adafruit_TinyUSB.h>` in every sketch. `Serial` links only if that header reaches the build, from the sketch or from a library header (`Adafruit_NeoPixel.h` includes it); a sketch with neither fails to link. `loop()` must return or call `delay()`/`yield()`, or uploads break. Never call `Serial.end()`.
-8. **None of the three upstream examples builds with the recommended FQBN.** `remoteControl.ino`, `sensing.ino` and `colors.ino` all include and use `Adafruit_MLX90393`, which pulls in BusIO (item 9). `colors.ino` also has its own compile errors (§11 item 12).
-9. Libraries built on **Adafruit BusIO** **fail to build at `opt=fastest`** (and at `opt=faster` and `opt=dragons`): MLX90393 and BusIO alone are verified; APDS9960 includes the same BusIO header (not compiled itself). Use `opt=small` or raw `Wire` (§9.1).
+8. Libraries built on **Adafruit BusIO** (MLX90393, APDS9960) **fail to build at `opt=fastest`**, `opt=faster` and `opt=dragons`. All three upstream examples use the MLX90393, so **none of them builds with the recommended FQBN**. Use `opt=small` or raw `Wire` (§9.1, build failure 1). `colors.ino` also has its own compile errors (§11 item 12).
 
 ---
 
@@ -371,7 +370,7 @@ void motorSet(uint8_t ch /*0 = RIGHT (D2), 1 = LEFT (D3)*/, float s /*-1..1*/, u
 **Magnetometer**, MLX90393 (0x10):
 - 3-axis Hall, 16-bit, 50 mT range, 0.161–3.22 µT/LSB (XY), I2C ≤ 400 kHz. INT and TRIG are **not connected**, so poll it.
 - The Adafruit library initialises at gain 1x, 16-bit, OSR_3, FILTER_7. With those settings `readData()` **blocks for about 210 ms**. For control loops, lower the filter/OSR or use `startSingleMeasurement()` and `readMeasurement()`.
-- **The Adafruit library does not build at `opt=fastest`** (nor `opt=faster` or `opt=dragons`; §9.1). Build with `opt=small`, or drive the sensor over `Wire` directly. `calibration/firmware/calib_bot/calib_bot.ino` does the latter, with non-blocking conversions (compiled; UNTESTED on a bot).
+- **The Adafruit library needs `opt=small`** (§9.1, build failure 1). `calibration/firmware/calib_bot/calib_bot.ino` drives the sensor over raw `Wire` instead, with non-blocking conversions (compiled; UNTESTED on a bot).
 - The ERM magnets and motor currents disturb it. Sample with the motors stopped (EN LOW plus about 100 ms) or calibrate under the operating state (INFERRED).
 - The sensor's axis orientation relative to the body is **UNKNOWN**. Find it by rotating the bot flat through 360° and flipping it.
 
@@ -454,7 +453,7 @@ pinMode(10, OUTPUT); digitalWrite(10, HIGH); // enable the APDS IR-LED supply (n
 apds.begin(); apds.enableColor(true);     // Adafruit_APDS9960 defaults: 10 ms integration, 4x gain -> clear full scale ~4096
 ```
 
-- **Build at `opt=small`.** `Adafruit APDS9960 Library` 1.3.1 depends on Adafruit BusIO (its header includes `Adafruit_I2CDevice.h`), which fails at `opt=fastest` (§9.1). The APDS library itself was not compiled. The examples that use this module fail with the recommended FQBN anyway: like `remoteControl.ino`, `sensing.ino` and `colors.ino` include and use `Adafruit_MLX90393`, the verified failing case (§9.1). `colors.ino` also has its own errors (§11 item 12).
+- **Build at `opt=small`.** `Adafruit APDS9960 Library` 1.3.1 depends on Adafruit BusIO, which fails at `opt=fastest` (§9.1, build failure 1; a minimal APDS9960 sketch was compiled both ways).
 - **Never call `SPI.begin()` with this module fitted.** It hands D8 and D10 to SERCOM2 and breaks INT and the LED enable.
 - With D10 LOW, colour and ALS still work, but proximity and gesture have no IR LED.
 - Below about 3.35 V of battery the AP2112K is in dropout, so VLEDA ≈ V+. VLEDA falls below the APDS 3.0 V minimum at about 3.05–3.15 V of battery, depending on LED drive current and boost. Proximity weakens there (INFERRED).
@@ -584,7 +583,7 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 - **Platforms:** `graspion:samd` 1.0.1 (installed 2026-10-27; 1.0.0 on 2026-10-15, built on Adafruit ArduinoCore-samd 1.7.17), and `graspion:nrf52` 1.0.3. The index keeps only the latest version of each.
 - **1.0.1 defines `USE_NO_SEND_PWM`** in `graspionBody.build.extra_flags` (`boards.txt`), so every body sketch now sends IR without software PWM: the AVR adds the carrier (§4.5). A sketch that also has `#define USE_NO_SEND_PWM` (as `bot_blaster` does) gets a harmless `"USE_NO_SEND_PWM" redefined` warning; keep the define so the sketch still builds correctly on 1.0.0.
 - **Body FQBN:** `graspion:samd:graspionBody:opt=fastest,usbstack=tinyusb`. The menu defaults are `opt=small` (-Os) and `usbstack=arduino`; the README asks for Ofast and TinyUSB.
-  - **Exception:** a sketch that uses any library built on Adafruit BusIO does not build at `opt=fastest`, `opt=faster` or `opt=dragons`. That is verified for MLX90393 and for BusIO alone; APDS9960 includes the same BusIO header (not compiled itself). All three upstream examples include `Adafruit_MLX90393.h`, so none of them builds at `opt=fastest`. Use `opt=small,usbstack=tinyusb` for such sketches (verified). `opt=fast` (-O2) is UNTESTED for a whole sketch (see "Build failures" below).
+  - **Exception:** a sketch that uses any library built on Adafruit BusIO (MLX90393, APDS9960; so all three upstream examples) needs `opt=small,usbstack=tinyusb`. Cause and other workarounds: build failure 1 below.
 - The upstream README still says to use "Adafruit QT Py M0", and `examples/upload_all.sh` uses `adafruit:samd:adafruit_qtpy_m0`. **Do not.** That variant drives D12 (motor enable) HIGH at boot while the PWM pins float. The authors' own unmerged README proposal recommends GRASPion Body.
 - **Libraries** (exact Library Manager names). A version means it was compiled for graspionBody on 2026-10-27 (and, except for DMA neopixel and APDS9960, on 2026-10-15):
   - `Adafruit NeoPixel` (1.15.5)
@@ -638,7 +637,7 @@ Then set `ARDUINO_CONFIG_FILE` = `C:\Users\<you>\Arduino15\arduino-cli.yaml` for
 Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15; `bot_blaster` was flashed on 2026-10-16), any upload with the 2026-10-27 toolchain, a whole sketch at `opt=fast`, `opt=faster` or `opt=dragons`, and the APDS9960 / DMA NeoPixel sketch on a bot.
 
 **Build failures and workarounds** (verified by compiling as above):
-1. **Adafruit BusIO at `opt=fastest`.** BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-O3` and above (`opt=faster`, `opt=fastest`, `opt=dragons`), gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library, for BusIO alone and (2026-10-27) for `Adafruit APDS9960 Library` 1.3.1, which includes the same `Adafruit_I2CDevice.h`. Workarounds:
+1. **Adafruit BusIO at `opt=fastest`** (also `opt=faster` and `opt=dragons`). BusIO's `Adafruit_SPIDevice.cpp` (its bit-banged SPI, which arduino-cli compiles even when the sketch only uses I2C) calls the core's inline `delayMicroseconds` (`cores/arduino/delay.h`). Its asm loop `sub %0, #1` takes the counter with a `"+r"` constraint. At `-O3` and above (`opt=faster`, `opt=fastest`, `opt=dragons`), gcc 9.2 assigns `ip` (r12), and the Thumb-1 assembler rejects it: `Error: lo register required -- 'sub ip,#1'`. Any sketch that pulls BusIO into the build inherits this. That is verified for the MLX90393 library, for BusIO alone and (2026-10-27) for `Adafruit APDS9960 Library` 1.3.1, which includes the same `Adafruit_I2CDevice.h`. Workarounds:
    - build with **`opt=small`** (-Os; verified with a whole MLX90393 sketch). This applies to the whole sketch and core, not just BusIO;
    - `opt=fast` (-O2) costs less speed, but only the failing file was shown to assemble at -O2: a whole sketch at `opt=fast` is UNTESTED;
    - or drive the device over `Wire` directly, as `calibration/firmware/calib_bot/calib_bot.ino` does for the MLX90393 (datasheet command set, register layout from the Adafruit library; about 80 lines).
@@ -711,7 +710,7 @@ Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15
 10. **SERCOM3:** ZeroDMA NeoPixels and the SPI1 flash cannot run together.
 11. **TinyUSB:** `#include <Adafruit_TinyUSB.h>` in every sketch. arduino-cli links `Serial` only if that header reaches the build, from the sketch or from a library header (`Adafruit_NeoPixel.h` includes it). Keep `loop()` yielding, never call `Serial.end()`, never `while(!Serial)`.
 12. **The upstream examples do not build with the recommended FQBN.**
-    - All three (`remoteControl.ino`, `sensing.ino`, `colors.ino`) include and use `Adafruit_MLX90393` (line 4; objects at lines 27 / 31 / 55), which pulls in BusIO and fails at `opt=fastest` (item 18). This follows directly from the verified MLX90393 build (§9.1), not from the APDS9960 dependency, which is a second reason for `sensing.ino` and `colors.ino`.
+    - All three (`remoteControl.ino`, `sensing.ino`, `colors.ino`) include and use `Adafruit_MLX90393` (line 4; objects at lines 27 / 31 / 55), so they fail at `opt=fastest` (item 18).
     - None of them includes `<Adafruit_TinyUSB.h>` itself. `Serial` probably still links under TinyUSB, because their NeoPixel headers include it (INFERRED). All three call `Serial.end()`, which item 11 forbids under TinyUSB.
     - Workaround: build with `opt=small`, and for `usbstack=tinyusb` remove the `Serial.end()` calls and add the TinyUSB include (UNTESTED for the examples).
     - `colors.ino` also has its own errors: `launchDIFF()` and `launchBALL()` are undefined, and AV/0x0A is not handled. Its 0x13 handler, and `sensing.ino`'s, prints labels to `Serial` but values to `Serial1`.
@@ -726,7 +725,7 @@ Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15
 16. **Plain-text extraction of the arXiv HTML** turns "9 mm / 6 g / 2 MB" into "99 mm / 66 g / 22 MB". Trust the PDF.
 17. **Battery-dependent behaviour:** NeoPixel brightness, IR LED current and high-duty motor speed all change between USB and battery and with charge state. The DRV2603 compensates only while V+ ≥ about 3.4 V (INFERRED).
 18. **Build failures** (verified by compiling, §9.1):
-    - **Adafruit BusIO at `opt=fastest`:** the core's `delayMicroseconds` inline asm (`"+r"`) gets `ip` at `-O3` and above, and Thumb-1 rejects it: `lo register required -- 'sub ip,#1'`. So `opt=faster`, `opt=fastest` and `opt=dragons` all fail. This breaks the MLX90393 library (and so all three upstream examples) and APDS9960, which includes the same BusIO header. Use `opt=small` (verified), or raw `Wire` as in `calibration/firmware/calib_bot/calib_bot.ino`. `opt=fast` (-O2) is UNTESTED for a whole sketch.
+    - **Adafruit BusIO at `opt=faster` / `fastest` / `dragons`:** `lo register required`. It breaks MLX90393 (so all three upstream examples) and APDS9960. Use `opt=small` or raw `Wire` (§9.1, build failure 1).
     - **Windows:** a long arduino-cli data path gives `cannot execute 'cc1plus'` (MAX_PATH). Use the default `%LOCALAPPDATA%\Arduino15` or a `subst` drive.
 
 **Example sketch IR command table** (NEC command byte):
