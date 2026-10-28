@@ -207,7 +207,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 - no replicates, durations, fps or battery state published;
 - the cubic v-fit overfits: leave-one-out RMSE 0.52 cm/s, worse than a plane at 0.47;
 - the coefficients pasted into the inverse step are truncated (error 0.38 → 0.66 cm/s);
-- only 49 % of the LUT's (v, ω) box is reachable, and the rest is silently projected;
+- only about 44 % of the LUT's (v, ω) box is reachable, and the rest is silently projected. Rechecked 2026-10-28 (the 49 % stated here earlier could not be reproduced): the lab's own VL/VR tables hit 43–45 % of their targets within 0.01–0.1 cm/s and 0.001–0.01 rad/s, the hard-coded model's image covers 43.6 % of the box, and a full-precision refit 39 % (`lab_fit/`);
 - the grid omits single-motor and sub-60 drive;
 - the controllers' limits exceed the measured envelope (ω −3.46 to +1.43 rad/s): the learned circle policy clamps ω at ±4.5 rad/s and the acados figure-8 model bounds ω at ±5.3 rad/s and v at 0–15 cm/s, so counter-clockwise turns saturate;
 - left vs right is not established: the sketches disagree on the `M<a>,<b>` order (HARDWARE.md §6.2), and the row labelling and ω sign convention are not recorded. The data fit §4.4's kinematics under one consistent reading only.
