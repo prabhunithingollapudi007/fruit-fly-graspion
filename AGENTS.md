@@ -6,7 +6,7 @@ This project programs and uses **GRASPion** brainbots: vibration-driven robots b
 
 **For Phase 0 calibration ("learning to walk": firmware, IR blaster, tracker, scheduler, map fitting), read [calibration/README.md](calibration/README.md).** Its offline tests run with `python -m graspion_calib selftest` from `calibration/pc`.
 
-**Before running controllers or learned policies on the robot, read [FEASIBILITY.md](FEASIBILITY.md).** This covers the figure-8 MPC / residual / PPO / connectome brains from `tilemat_control_stack`, the external vs onboard brain, calibration ("learning to walk") and swarms. It quantifies what fits on which chip, the sim-to-robot gap, the calibration protocol and the roadmap.
+**Before running controllers or learned policies on the robot, read [FEASIBILITY.md](FEASIBILITY.md).** This covers the figure-8 MPC / residual / PPO / connectome brains from `tilemat_control_stack`, the external vs onboard brain, calibration ("learning to walk"), swarms, and a VLA that learns to drive without explicit calibration (§10). It quantifies what fits on which chip, the sim-to-robot gap, the calibration protocol and the roadmap.
 
 Rules that prevent the most common mistakes (details in HARDWARE.md §11):
 - Build for `graspion:samd:graspionBody:usbstack=tinyusb`, not the Adafruit QT Py M0 board.

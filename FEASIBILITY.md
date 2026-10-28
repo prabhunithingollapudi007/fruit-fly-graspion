@@ -8,7 +8,7 @@
 - the lab's digital-twin repo (github.com/GRASP-LAB/brainbot-digital-twin);
 - datasheets and papers.
 
-An adversarial cross-check pass followed, and every cited paper was verified against its primary page. Updated the same day with findings from building the Phase 0 tooling in [calibration/](calibration/README.md): CoR identifiability (§4) and the implementation pointers in §5.2–5.4. Nothing has been measured on a real bot yet. Labels follow HARDWARE.md: **ESTIMATE** = my arithmetic, **INFERRED** = reasoned, **UNKNOWN** = must be measured.
+An adversarial cross-check pass followed, and every cited paper was verified against its primary page. Updated the same day with findings from building the Phase 0 tooling in [calibration/](calibration/README.md): CoR identifiability (§4) and the implementation pointers in §5.2–5.4. Updated 2026-10-28 with the lab's two control repos (§5.1) and a VLA section (§10; its model facts were checked against the papers' abstracts and the OpenVLA paper's §3.5). Nothing has been measured on a real bot yet. Labels follow HARDWARE.md: **ESTIMATE** = my arithmetic, **INFERRED** = reasoned, **UNKNOWN** = must be measured.
 
 ---
 
@@ -34,6 +34,7 @@ An adversarial cross-check pass followed, and every cited paper was verified aga
 7. **Scientific opportunity.** Within about 40 web searches (not a systematic review), no paper was found that runs deep-RL/NN tracking policies, residual RL on MPC, or FlyWire/MANC-derived controllers on a physical bristlebot or brainbot. The only learned policies on vibration robots were a central light-field policy over Kilobots and onboard evolutionary RL of a phototaxis threshold. The lab's own digital-twin paper names NN controllers and multi-bot interaction as its future work, so the opening is shared with them (§8).
 8. **Safety first on hardware.** Every closed-loop phase needs a **command watchdog**: the motors must stop when no valid frame arrives within ~300 ms. Without it, a lost IR frame or a stalled PC leaves the bot driving into walls or down to the 2.8 V cut-off, after which only USB revives it (§5.2).
 9. **Connectome vs. shuffle (simulation).** No measurable advantage: all contrasts of flywire_dn and manc_vnc against their shuffles or dense have 95 % CIs that include 0 (`runs/full/report/RESULTS.md`). For hardware, pick the cheapest actor. Keep the connectome actors as the scientific comparison: they are just as deployable.
+10. **A VLA without explicit calibration is feasible as a hierarchy, not end to end.** The VLA (PC GPU, 1–6 Hz) sets goals or target motions; a small adaptive low-level policy, trained in simulation on randomised plants, maps them to (L, R) and infers each bot's quirks from its recent history. That replaces the per-bot calibration session, not its data: the play data come from the existing calibration rig. Bench checks, the PWM mode and the safety layer stay mandatory (§10).
 
 ---
 
@@ -414,6 +415,70 @@ Then:
 3. **Reference geometry.** Enlarge the figure-8 (and the solver box), or extend the drive set to keep it small?
 4. **Action space for retraining.** Keep (v, ω) + inverse map, or train directly in (L, R)?
 5. **PWM mode.** 732 Hz (the examples' default; the twin's mode is UNKNOWN) or in-spec 40 kHz. This must be fixed before calibrating.
+6. **VLA (§10).** Is a GPU of at least the RTX 4090 class available next to the rig? Which instruction set should the model follow (goal positions, shapes, other bots or objects)? Is "no per-bot calibration session" the claim to test, against a calibrated baseline?
+
+---
+
+## 10. A vision-language-action model that learns to drive, without explicit calibration
+
+Added 2026-10-28. Nothing here has been built or run; numbers are ESTIMATES unless sourced.
+
+### 10.1 Verdict
+
+- **Yes, the explicit calibration step can go:** no grid fit, polynomial or lookup table per bot. **The data it collects cannot go.** A policy that outputs motor powers must learn the same (L, R) → motion map, from demonstrations, from random driving, or from a short history of its own commands and their effects.
+- **The realistic architecture is a hierarchy** (§10.3): a VLA on the PC sets goals or target motions at a few Hz, and a small adaptive low-level policy turns them into (L, R) at the link rate, inferring each bot's quirks online from the last few seconds. That last part replaces the per-bot calibration session.
+- **End-to-end VLA → (L, R) is possible but weak.** Most VLAs see one image or a short window. Per-bot differences are large (one bot drives straight at L 60, R 80; equal powers turn it at −0.7 to −1.2 rad/s, §4), so the model must see its own recent commands and motion to tell bots apart.
+- **What remains mandatory** takes minutes per bot, not a calibration session: bench check 11 (motor identity and turn direction, calibration/README.md §5), the PWM mode (§9 item 5; a policy trained in one mode is invalid in the other), the dead zone (about 55–60, HARDWARE.md §4.4), and the safety layer (watchdog, deadman, geofence, re-centring; §5.2).
+
+### 10.2 Constraints from this robot
+
+| item | value | consequence |
+|---|---|---|
+| Where the VLA runs | PC GPU. OpenVLA (7 B) runs at about 6 Hz on one RTX 4090 and needs 15 GB in bfloat16 (Kim et al. 2024, §3.5). Octo has 27 M / 93 M parameters, SmolVLA 450 M (§10.6) | Nothing onboard: the SAMD21 has 32 KB RAM, and the 2026 head has 786 KB SRAM (HARDWARE.md §6.1) |
+| Downlink | IR: ≤ 9 frames/s for the whole channel, maybe ~5/s; one (L, R) per frame (§3.2). BLE add-on ≥ 10 Hz | The bot executes one action per frame. Action chunks are unrolled on the PC at the frame clock, not sent as a chunk |
+| Loop latency | camera + IR ≈ 245–260 ms (§3.3), plus VLA inference ≈ 170 ms at 6 Hz → ≈ 0.4 s (ESTIMATE) | At 11.5 cm/s and 3.46 rad/s the bot moves ≈ 4.6 cm and turns ≈ 1.4 rad before an action acts on the image it came from. Goal reaching is fine; ≤ 5 cm figure-8 tracking end to end is not |
+| Vision | Overhead camera only; the bot has no camera | Third-person VLAs fit (Octo, OpenVLA). At 224–256 px over a 1.2 m arena (INFERRED input sizes), a bot spans about 11 × 6 px, so heading is barely visible: also feed the tracker's pose (x, y, θ, recent velocity) as state, or crop around the bot |
+| Robot time | > 90 min per battery; bots differ; walls end segments (§5.2) | Pure RL on hardware is impractical (§0 item 5). Use imitation, relabelled random driving and simulation |
+| Action space | 2 signed bytes (L, R), clamped to ±120 by `calib_bot`'s `DRIVE_MAX`; 0 = stop (`analogWrite` 128, EN LOW when both are 0) | Fits OpenVLA-style 256-bin action tokens. A policy must never emit raw `analogWrite` values: `analogWrite` 0 is full reverse |
+
+### 10.3 Architecture
+
+1. **Top: the VLA** (PC GPU, 1–6 Hz). Input: the overhead image, an instruction ("drive to the top-left corner", "circle clockwise", "follow bot 3"), and the tracker state. Output: a waypoint or a short chunk of target (v, ω). Fine-tune a small model first (Octo or SmolVLA; SmolVLA's asynchronous inference keeps the queue fed while the next chunk is computed), OpenVLA or π0-class later.
+2. **Middle: an adaptive low-level policy** (PC CPU, at the IR frame clock). Input: the target, the last 2–5 s of tracker poses and of (L, R) sent. Output: (L, R). This is RMA's idea (Kumar et al. 2021): a base policy plus an adaptation module that infers the hidden plant parameters from recent history, trained only in simulation with randomised plants and deployed without real-world fine-tuning.
+   - Train it on `calibration/pc/graspion_calib/sim.py`'s randomised bots, widened to cover §4: dead zone, coupling, CW bias, CoR offset, motor lag, 0.1–0.4 s delay, link loss, battery sag.
+   - Fine-tune on recorded random driving (10.4). It is a tiny MLP or GRU, so it also fits the 2026 head later (§2).
+3. **Bottom: `calib_bot` firmware**, unchanged: per-frame (L, R), address filter, CRC, command watchdog and deadman (calibration/README.md §1).
+
+The VLA never outputs motor powers, so its actions mean the same on every bot. Only the middle layer deals with per-bot quirks, and it adapts within seconds instead of needing a calibration session (UNTESTED claim; measuring it is the experiment).
+
+### 10.4 Data without a calibration fit
+
+- **Play data** is what the calibration rig already records: random (L, R) segments, steps, PRBS and circles (`schedule grid / steps / prbs / circles`), with tracker poses, frame logs and battery logs (calibration/README.md §5 and §7). Skip `analyze`'s fit and keep the raw segments.
+- **Hindsight relabelling:** every recorded stretch from pose A to pose B becomes a goal-conditioned example "go to B", and templated language turns it into an instruction (Lynch & Sermanet 2021 train language-conditioned policies on unstructured play with under 1 % of it annotated).
+- **Teleoperation:** a person driving with a keyboard or gamepad acts as the inverse map and supplies demonstrations for instructions that random driving rarely produces (circles around an object, following another bot). The frames exist (a SEG, then DRIVE keep-alives at the blaster period; a DRIVE without a SEG stops the bot), but a teleop front end and its logging are **not implemented**.
+- **Scale (ESTIMATE):** one battery gives about 60 min of segments; ≥ 5 bots (8–10 better) for the low-level policy to see real spread; SmolVLA was pretrained on under 30 k episodes, so plan on hundreds to a few thousand relabelled episodes per instruction family for fine-tuning, and measure.
+- **Record the same metadata as calibration:** bot ID ↔ chip serial, battery voltage, PWM mode and firmware version, so the data stay usable if a fit is wanted later.
+
+### 10.5 Plan and success criteria
+
+1. **Bench:** bench checks 1–11 on every bot, PWM mode fixed.
+2. **Simulation:** train the adaptive low-level policy on randomised plants; check it adapts to unseen plants, including the twin's measured envelope (§4).
+3. **Play data:** record random driving on ≥ 5 bots with the existing schedules.
+4. **Low level on the robot:** goal reaching against two baselines, the same task with a per-bot calibrated map (§5.3) and with a single fleet-average map. **"No calibration" only stands if the adaptive policy matches the calibrated baseline.** Report time-to-adapt on a new bot (seconds of driving until goal error < 3 cm) and the final error.
+5. **VLA:** fine-tune on relabelled play data plus teleop demos, then evaluate language-conditioned goal reaching per instruction family, on bots held out of training.
+6. **Swarm:** several bots, one camera, the IR channel divided between them (§3.2).
+
+§5.5's online "keep learning to walk" is the same idea applied to the calibrated stack; the adaptive low-level policy makes it implicit.
+
+### 10.6 Papers (checked on their arXiv abstract pages; OpenVLA's speed and memory from its paper, §3.5)
+
+- Kim, Pertsch, Karamcheti et al., "OpenVLA: An Open-Source Vision-Language-Action Model", arXiv:2406.09246 (2024). 7 B parameters, 970 k real-robot demonstrations, fine-tunable on consumer GPUs with low-rank adaptation; about 6 Hz on one RTX 4090, 15 GB in bfloat16; each action dimension in 256 bins; 5 and 15 Hz controllers in its experiments.
+- Kim, Finn, Liang, "Fine-Tuning Vision-Language-Action Models: Optimizing Speed and Success", arXiv:2502.19645 (2025). OFT recipe (parallel decoding, action chunking, continuous actions, L1 loss): 26× action-generation throughput.
+- Octo Model Team (Ghosh, Walke, Pertsch et al.), "Octo: An Open-Source Generalist Robot Policy", arXiv:2405.12213 (2024). Octo-Small 27 M and Octo-Base 93 M parameters (project page), 800 k Open X-Embodiment trajectories, fine-tunable to new sensory inputs and action spaces.
+- Shukor, Aubakirova et al., "SmolVLA: A Vision-Language-Action Model for Affordable and Efficient Robotics", arXiv:2506.01844 (2025). 450 M parameters (Hugging Face blog), trained on a single GPU, deployable on consumer GPUs or CPUs; asynchronous inference decouples prediction from execution; pretrained on 487 community datasets, under 30 k episodes.
+- Black, Brown, Driess et al., "π0: A Vision-Language-Action Flow Model for General Robot Control", arXiv:2410.24164 (2024). Flow-matching action generation on a pretrained vision-language model.
+- Kumar, Fu, Pathak, Malik, "RMA: Rapid Motor Adaptation for Legged Robots", RSS 2021, arXiv:2107.04034. A base policy plus an adaptation module; adapts to novel situations "in fractions of a second" and was deployed on the A1 robot without fine-tuning. The template for §10.3's middle layer.
+- Lynch, Sermanet, "Language Conditioned Imitation Learning over Unstructured Data", RSS 2021, arXiv:2005.07648. Language-conditioned policies from unstructured play data, with under 1 % of it language-annotated. The template for §10.4.
 
 ---
 
