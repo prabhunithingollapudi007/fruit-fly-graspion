@@ -313,6 +313,13 @@ The serial-terminal checks (2, 3) talk to the blaster at 115200 baud, one comman
 10. **I2C time-out:**
     - With the bot powered, short SCL (HEAD X3 pin 9 or SWD X2 pin 6) to GND for about 1 s. The bot must keep answering `s`, with `pwr_err` and `mag_err` rising and no reset (`rcause` unchanged).
     - Then power-cycle with SCL held low: `setup()` must finish, USB must enumerate, `i` must show `i2c=0`, and a SEG (`X <id> 1 80 80`) must get a red flash and no motion. Release SCL: within about 1 s `i` must show `i2c=1` and `mag=1`, and a SEG must drive again. The AVR shares this bus; how it reacts is UNKNOWN.
+11. **Motor identity and turn direction** (once per bot, before the first map). HARDWARE.md §4.4's kinematics come from the paper and are not VERIFIED, and V1.3 wires the right motor pair with reversed polarity.
+    ```bash
+    python -m graspion_calib schedule circles --pairs "[[100,0],[0,100]]" --long-s 5 --out sessions/turns.json
+    ```
+    Then `run` it with the camera recording.
+    - Left only (`[100, 0]`, D3) must turn the bot clockwise seen from above, so `theta` in `tracker.csv` falls. Right only (D2) must turn it counter-clockwise, so `theta` rises. Both motors must run.
+    - If the video and `theta` disagree, the frame is mirrored or `marker_yaw` is wrong. If both show the opposite turn, the motors are swapped or seated wrongly, or §4.4 is wrong. Stop, record it, and resolve it before mapping.
 
 **C. Camera intrinsics:**
 ```bash

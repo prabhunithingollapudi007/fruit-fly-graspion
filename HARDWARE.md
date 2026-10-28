@@ -8,6 +8,7 @@ Hardware reference for the **GRASPion** brainbot: a programmable vibration-drive
 - **Compiled:** 2026-10-14. Sources were the upstream repo files, the four schematic PDFs (rendered and read), manufacturer datasheets, the paper and related papers, followed by an adversarial cross-check pass.
 - **Updated:** 2026-10-15, with toolchain facts verified by compiling while building [calibration/](calibration/README.md) (§9.1, §11), and the UF2 bootloader's effect on the motor enable, read from the uf2-samdx1 sources (§4.4, §9.2). Nothing in this update has run on a bot.
 - **Updated:** 2026-10-16, with the first results on a real bot: IR TX polarity and NEC sending bot-to-bot, with one body used as a USB IR remote (`bot_blaster/`; §4.5, §9.1).
+- **Updated:** 2026-10-28, from a code and data read of the lab's two control repos: `GRASP-LAB/brainbot-digital-twin` @ 9ee0aa8 and `prajolshrestha/mpc_and_imitation_learning_deployment_src` @ 1c2d6a0 (§4.4, §6.2, §8, §12). They add no electrical facts and contradict none of the sourced or VERIFIED items. Nothing in this update has run on a bot.
 
 **Confidence labels used below.**
 
@@ -324,7 +325,9 @@ void motorSet(uint8_t ch /*0 = RIGHT (D2), 1 = LEFT (D3)*/, float s /*-1..1*/, u
 }
 ```
 
-**Per-bot calibration is required.** Bots are mechanically asymmetric. In the lab's digital-twin work (github.com/GRASP-LAB/brainbot-digital-twin), left/right powers of 60–120 (INFERRED to be on the buzCw 0–127 scale; the body-side parser is not published) gave a centre-of-mass speed of **4.7–11.5 cm/s** and |ω| up to about 3.5 rad/s. One bot drove straight at (L, R) = (60, 80).
+**Per-bot calibration is required.** Bots are mechanically asymmetric. In the lab's digital-twin work (github.com/GRASP-LAB/brainbot-digital-twin), left/right powers of 60–120 (INFERRED to be on the buzCw 0–127 scale; the body-side parser is not published) gave a centre-of-mass speed of **4.7–11.5 cm/s** and ω from −3.46 to +1.43 rad/s. One bot drove straight at (L, R) = (60, 80), and equal powers drift clockwise (left motor stronger).
+- That reading of left and right is INFERRED. The bot's turns are consistent with §4.4's kinematics only for one combination of three unknowns: how the table rows were labelled, the ω sign convention, and the `M` command order (§6.2). Two wrong guesses would look the same.
+- It is one bot, one value per grid cell, with no repeats, durations, battery state or PWM mode (§12) published. FEASIBILITY.md §5.1 has the table provenance and layouts.
 
 ### 4.5 IR link
 
@@ -501,7 +504,9 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 // setup(): SerialHead.begin(115200);
 ```
 
-- The lab's earlier STM32/BLE add-on (digital-twin paper, `brainbot-digital-twin/tinympc_deployment_code/fig8.ino`) sent `"M<left>,<right>\n"` at **115200 baud** to the body. `"M0,0\n"` is the safe stop, and values range 60–120. That is a different STM32 board, and the body-side parser is not published.
+- The lab's earlier BLE add-on (digital-twin paper) is a different board: a **Nucleo-WB55** (STM32WB55, `board = nucleo_wb55rg_p` in the deployment repo's `platformio.ini`), running STM32duinoBLE with the Nordic UART service. It sends `"M<a>,<b>\n"` at **115200 baud** to the body on its LPUART1 (`HardwareSerial SerialLP1(PC0, PB5)`, RX PC0, TX PB5). `"M0,0\n"` is the safe stop. The body-side parser is not published.
+  - **The motor order is UNKNOWN; the lab's sketches disagree.** `circlenn.ino`, `circle_osqp.ino`, `circle_tinympc.ino` and `figure8_tinympc.ino` (deployment repo `old_stuff/`) send right first, `M<mr>,<ml>`. `circle_tinympc_siddhant.ino` and its descendant, the published `brainbot-digital-twin/tinympc_deployment_code/fig8.ino`, send left first, although `fig8.ino`'s header comment says `M<mr>,<ml>`. Swapping the two mirrors ω.
+  - Values: the LUT-based sketches send 60–120. The older sketches map (v, ω) linearly instead: `vl = v − 0.0161·ω`, `vr = v + 0.0145·ω`, then power = (v − 0.04)·19/0.05 + 56, so 4–9 cm/s becomes 56–75.
 
 ### 6.3 Firmware status and documentation errors
 
@@ -549,12 +554,14 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 | Quantity | Value | Source |
 |---|---|---|
 | Top speed | 16 cm/s (paper Fig. 1a); about 15 cm/s (README) | Paper, README |
-| Calibrated speed range | 4.7–11.5 cm/s for powers 60–120; |ω| up to about 3.5 rad/s | Digital-twin lookup tables |
+| Calibrated speed range | 4.7–11.5 cm/s for powers 60–120; ω from −3.46 to +1.43 rad/s | Digital-twin lookup tables (one bot) |
+| Leg-angle dataset (digital twin, arXiv v1) | **A different configuration; do not mix with the rows above.** 90 tracked single-motor spins: custom leg plates at 5, 10, 15, 20 and 25° (the published plates are 12° and 10°, §7); power as an "effective voltage" of 0.6–3.0 V (20–100 % × 3.0 V; its mapping to `analogWrite` is UNKNOWN); most about 23 s (about 10 cut short); one file is a byte-identical copy of another (20° left, 30 % = 40 %). Spin radius mostly 1.2–3 cm, CoM speed ≤ 4.8 cm/s, \|ω\| ≤ about 2 rad/s (period ≥ 3 s, against 1.7–2.0 s in the GRASPion paper). The paper names an ARM MCU, light/colour/magnetic sensors and IR, so a GRASPion-family body; the board revision is UNKNOWN. Paper battery figure 40–60 min. | `bot_simulation/bbot_data` (computed 2026-10-28) |
+| Twin model geometry | Ellipse 55 × 30 mm (the tracked outline measures about 53 × 29 mm), against the 60 × 30 mm body. Single-motor pivot at ρ₁·A₁ along the heading and ρ₂·A₂ sideways, ρ₁ = −0.374 and ρ₂ = ∓0.661 (CW / CCW): about 1.0 cm behind the centre and 1.0 cm to the turn side. The side agrees with §4.4. The paper's "front leg" disagrees on front vs rear, but the twin's heading was flipped by hand per recording to the direction of travel, so this may be only a convention difference (§12). | `bot_simulation/src/simopt.py` |
 | Single-motor rotation period | About 1.71 s CW and 1.99 s CCW; centre-of-mass circle radius about 1.5–1.9 cm | INFERRED from paper figure data |
 | Diffusive mode (`launchRT`) | Straight and turn durations each uniform in [400, 1200] ms; turn direction 50/50 | Paper, examples |
 | Diffusive-mode statistics | Ballistic speed about 6.5 cm/s; crossover about 1 s; D_eff about 6–7 cm²/s | INFERRED from paper Fig. 5 data |
 | Random walk (stigmergy paper) | Persistence 0.8 s, persistence length about 10 cm | arXiv 2608.24383 |
-| Tracking | The GRASPion paper does not describe its tracking. The predecessor used an overhead camera with OpenCV; the stigmergy paper an overhead camera; the digital-twin work an optical camera plus an ArUco marker (mounting not stated). About 40 fps (INFERRED). | Papers |
+| Tracking | The GRASPion paper does not describe its tracking. The predecessor used an overhead camera with OpenCV; the stigmergy paper an overhead camera; the digital-twin work an optical camera plus an ArUco marker (mounting not stated). Twin code: the v1 leg-angle data is an ImageJ-style ellipse fit on the bot outline at about 35 fps, 0.674 mm/px; the v2 deployment receives pixel poses over BLE at 0.378 mm/px (`PXM`), so the two came from separate rigs. | Papers, twin code |
 
 **Demonstrated uses:**
 - IR remote control and chiral rotation.
@@ -563,7 +570,7 @@ void SERCOM2_Handler() { SerialHead.IrqHandler(); }
 - **Phototaxis**: diffusive speed scales with light received by the front-module APDS-9960, on an arena lit by LED panels underneath (revised paper only; see §5).
 - Synthetic tissue and cells: bots inside soft membranes (site).
 - Stigmergic transport among wooden cubes.
-- Onboard TinyMPC with Bluetooth pose feedback at 30 Hz.
+- Onboard TinyMPC with Bluetooth pose feedback at 30 Hz, on the Nucleo-WB55 add-on (§6.2), not the 2026 head.
 
 **Predecessor "Brainbot"** (Noirhomme et al., PR Applied 23, 064008, 2025): 8-bit MCU, **one** motor, 13 g, about 3.5 cm/s, 10 legs, microphone, micro-USB, 60 min runtime. Do not confuse its numbers with GRASPion's.
 
@@ -756,6 +763,11 @@ Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15
 - Real DRV2603 behaviour at 732 Hz PWM input.
 - Why the right motor's polarity is reversed on V1.3.
 - Leg-plate centre pin purpose and the assembled body pitch.
+- Lab control code (§4.4, §6.2, §8):
+  - the motor order the body's `M<a>,<b>` parser expects;
+  - how the lab's 7×7 table rows were labelled and which way its ω was signed;
+  - the units of the lab's "power" (buzCw 0–127 scale?) and "effective voltage", and the PWM mode used;
+  - where a single-motor turn pivots: the paper's front leg, or the twin's point about 1 cm behind the centre.
 - Head 2026:
   - which STM32↔nRF link carries the application and which carries DFU;
   - the purpose of PB10 and P0.23;
@@ -799,6 +811,7 @@ Not run: `upload` of the calibration sketches (no bot was attached on 2026-10-15
 - **Papers and site:**
   - RSI 97, 014704 (2026) / arXiv:2509.07437 / ULiège postprint
   - Noirhomme et al., PR Applied 23, 064008 (2025)
-  - Mammadli et al., Phys. Rev. Research 8, 033164 (2026), and github.com/GRASP-LAB/brainbot-digital-twin
+  - Mammadli et al., Phys. Rev. Research 8, 033164 (2026) / arXiv:2511.00384 v1 and v2, and github.com/GRASP-LAB/brainbot-digital-twin @ 9ee0aa8 (`bot_simulation/*`, `generate_LUT/*`, `tinympc_deployment_code/*`)
+  - github.com/prajolshrestha/mpc_and_imitation_learning_deployment_src @ 1c2d6a0 (`imitation_learning_mcu_deployment_src/task/circle/acados_simple/fitting/*`, `mpc_mcu_deployment_src/task/figure8/acados/*`, `old_stuff/**/*.ino`)
   - Wéry et al., arXiv:2608.24383 (2026)
   - graspion.be

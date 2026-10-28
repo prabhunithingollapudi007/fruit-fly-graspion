@@ -194,14 +194,22 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 - one bot, a 7×7 grid of powers 60–120 (buzCw scale, INFERRED), one value per cell;
 - overhead camera + ArUco;
 - cubic v / quadratic ω polynomial fit, inverted by bounded least squares into two 68×490 uint8 LUTs (66.6 KB, about a quarter of the SAMD21's flash);
-- run on an STM32 BLE add-on with a double-integrator TinyMPC (N 10) and feedback linearisation v_cmd = v + d·|ω|.
+- run on an STM32 BLE add-on (a Nucleo-WB55, HARDWARE.md §6.2) with a double-integrator TinyMPC (N 10) and feedback linearisation v_cmd = v + d·|ω|.
+
+**Provenance of the 7×7 tables** (checked 2026-10-28):
+- The original fit is in github.com/prajolshrestha/mpc_and_imitation_learning_deployment_src @ 1c2d6a0 (March 2026), `imitation_learning_mcu_deployment_src/task/circle/acados_simple/fitting/`: quadratic v and quadratic ω. The twin's ω coefficients in `gen_inverse_map.py` are the same fit.
+- The ω tables are identical in both repos. The twin's `vCOM_table_latest.npy` is re-processed: every cell is 0.01–0.10 cm/s (0.1–0.9 %) lower.
+- **Layouts differ.** The repo files have rows = right power *decreasing* (120 at the top) and columns = left power increasing; both fitting scripts assume that (`L.T`, `np.rot90(R)`), and their "rows = left" comment is wrong. A third copy of the same tables (`power.npy`, `velocity_table.npy`, `omega_table.npy`, held locally, not in the repo) is the same data with the rows flipped (`np.flipud`): `[i, j]` = (R = p[i], L = p[j]). Feeding that copy to the scripts unflipped mirrors the fit in R.
+- Older deployment sketches did not use the fit: they used a linear map with half-track widths 1.61 / 1.45 cm and powers 56–75 (HARDWARE.md §6.2).
 
 **Gaps:**
 - no replicates, durations, fps or battery state published;
 - the cubic v-fit overfits: leave-one-out RMSE 0.52 cm/s, worse than a plane at 0.47;
 - the coefficients pasted into the inverse step are truncated (error 0.38 → 0.66 cm/s);
 - only 49 % of the LUT's (v, ω) box is reachable, and the rest is silently projected;
-- the grid omits single-motor and sub-60 drive.
+- the grid omits single-motor and sub-60 drive;
+- the controllers' limits exceed the measured envelope (ω −3.46 to +1.43 rad/s): the learned circle policy clamps ω at ±4.5 rad/s and the acados figure-8 model bounds ω at ±5.3 rad/s and v at 0–15 cm/s, so counter-clockwise turns saturate;
+- left vs right is not established: the sketches disagree on the `M<a>,<b>` order (HARDWARE.md §6.2), and the row labelling and ω sign convention are not recorded. The data fit §4.4's kinematics under one consistent reading only.
 
 **Before reusing their firmware, check two things:**
 1. `fig8.ino` advances the reference clock by 0.1 s **per received packet**. At the paper's 30 Hz that runs the T = 28 s lemniscate 3× fast, so the timing used in the experiment is unclear.
@@ -398,7 +406,11 @@ Then:
 ## 9. Decisions and information needed from you
 
 1. **Hardware on hand.** How many bots, and V1.1 or V1.3? This also decides whether the lens-up IR receiver can be assumed. Is there any working 2026 head? Is there an overhead camera, and how large is the arena?
-2. **BLE add-on.** Can you borrow the digital-twin STM32 BLE add-on and its body-side `M<l>,<r>` parser (Mammadli / Shrestha)? That decides Phase 1: IR at 5–9 Hz or BLE at ≥ 10 Hz with lower latency. Ask them also for the actual packet rate (30 Hz reported, code consistent with 10 Hz) and their PWM mode.
+2. **BLE add-on.** Can you borrow the digital-twin BLE add-on (a Nucleo-WB55) and its body-side `M<a>,<b>` parser (Mammadli / Shrestha)? That decides Phase 1: IR at 5–9 Hz or BLE at ≥ 10 Hz with lower latency. Ask them also:
+   - the actual packet rate (30 Hz reported, code consistent with 10 Hz) and their PWM mode;
+   - the parser's motor order (their sketches send both `M<right>,<left>` and `M<left>,<right>`);
+   - how the 7×7 table rows were labelled, and which way ω was signed (camera y points down);
+   - what their "power" values are in `analogWrite` units.
 3. **Reference geometry.** Enlarge the figure-8 (and the solver box), or extend the drive set to keep it small?
 4. **Action space for retraining.** Keep (v, ω) + inverse map, or train directly in (L, R)?
 5. **PWM mode.** 732 Hz (the examples' default; the twin's mode is UNKNOWN) or in-spec 40 kHz. This must be fixed before calibrating.
@@ -411,7 +423,9 @@ Then:
   - `tilemat_control_stack/robots/elliptical_bot/controllers/mpc/acados_simple/`: `rl_arch_bench/{README.md, archs.py, presets.py, envs.py, mpc.py, suites.py, topologies/}`; `pure_rl_env.py`, `residual_env.py`, `Ellipse2dObj.py`, `symbolic_model_defination.py`, `generate_solver_via_acados.py`, `controller.py`, `config/solver_ellipse_mpc.yaml`.
   - The worktree `runs/full/report/{RESULTS.md, tables/}`.
   - `robots/brainbot/controllers/dmpc/acados_simple/det_10/`.
-- **Lab code:** github.com/GRASP-LAB/brainbot-digital-twin @ 9ee0aa8 (`generate_LUT/*`, `tinympc_deployment_code/*`).
+- **Lab code:**
+  - github.com/GRASP-LAB/brainbot-digital-twin @ 9ee0aa8 (`generate_LUT/*`, `tinympc_deployment_code/*`, `bot_simulation/*`);
+  - github.com/prajolshrestha/mpc_and_imitation_learning_deployment_src @ 1c2d6a0 (`imitation_learning_mcu_deployment_src/task/circle/acados_simple/fitting/*`, `mpc_mcu_deployment_src/task/figure8/acados/*`, `old_stuff/**/*.ino`).
 - **Calibration tooling:** [calibration/](calibration/README.md) (commit fa28d91), in particular `pc/graspion_calib/forward_map.py` (CoR identifiability) and `sim.py` (the simulated rig).
 - **Hardware:** [HARDWARE.md](HARDWARE.md).
 - **Per-operation costs and protocol facts:**
