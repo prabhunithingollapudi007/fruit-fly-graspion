@@ -1,0 +1,180 @@
+\section{Method}\label{sec:method}
+
+\subsection{Twist from a tracked
+path}\label{sec:twist}
+
+A 3 s segment at constant drive is, after the lag has settled, a
+circular arc: in the body frame the marker moves with constant twist
+\((u_1,u_2,\omega)\), and the instantaneous centre of rotation sits at
+\((-u_2/\omega,\ u_1/\omega)\). We rotate the differenced marker track
+into the body frame, where the velocity is linear in \((u_1, u_2)\) and
+the heading increment in \(\omega\), and fit the twist by linear least
+squares over the steady part of the segment; on the kinematic model of
+the lab's twin this recovers \(u_1\) to within 0.3 mm/s in simulation.
+The first 0.3 s after the command and the stop transient are excluded;
+they are used in §\ref{sec:lag} for the lag.
+
+\subsection{Forward map}\label{sec:forward-map}
+
+Each motor's drive \(p\in\{L,R\}\) enters through an activation with a
+dead zone and a power law,
+\[ f_k = \max(0, |p_k| - p_{0,k})^{\gamma_k}, \qquad k \in \{L,R\}, \]
+and the twist is linear in the activations:
+\[ \mathbf y = \mathbf C\,\boldsymbol\phi(f_L, f_R, \Delta V), \qquad \boldsymbol\phi_\mathrm{lin} = (1, f_L, f_R)^\top, \]
+with variants \texttt{int} (adds \(f_L f_R\)), \texttt{bat} (adds
+\(f_L\Delta V, f_R\Delta V\) with \(\Delta V\) the battery voltage
+relative to a reference) and \texttt{cor} (§\ref{sec:identifiability}).
+The activation uses \(|p_k|\), so the map covers the positive drive
+quadrant; the eight reverse-polarity cells of the protocol are checks of
+the firmware's motor directions, not part of the fit. A segment in which
+both motors are in their dead zone predicts zero twist. The dead zones
+and exponents are shared by the three outputs because they describe the
+motors, not the body; given them, \(\mathbf C\) is a linear
+least-squares solution, so the fit is a Nelder--Mead search over four
+nonlinear parameters with the coefficients projected out (variable
+projection), with residuals scaled per output so that 0.5 cm/s and 0.1
+rad/s count alike. Variants, and a Gaussian process and a small neural
+network as non-parametric comparators, are compared by grouped
+cross-validation in which all replicates of a drive cell are held out
+together, so that the score measures interpolation to unseen drive
+levels rather than replicate noise.
+
+\subsection{Identifiability of the centre-of-rotation
+offsets}\label{sec:identifiability}
+
+The twin's kinematic model, and GRASPion's ``rotation about a front
+leg'', place the centre of rotation at a lateral offset \(d\) from the
+reference point, with separate values \(d_\mathrm{cw}\) and
+\(d_\mathrm{ccw}\) for the two turning directions, so that the forward
+speed of the reference point is
+\(u_1 = v + d_\mathrm{ccw}\,\omega^+ + d_\mathrm{cw}\,\omega^-\) with
+\(\omega^\pm = \max(\pm\omega, 0)\). Since
+\(|\omega| = \omega^+ + \omega^-\) and \(\omega = \omega^+ - \omega^-\),
+\begin{equation}
+d_\mathrm{ccw}\,\omega^+ + d_\mathrm{cw}\,\omega^- = \bar d\,|\omega| + \tfrac12 (d_\mathrm{ccw} - d_\mathrm{cw})\,\omega,
+\label{eq:cor}
+\end{equation}
+with \(\bar d = \tfrac12 (d_\mathrm{ccw} + d_\mathrm{cw})\).
+In the forward map \(\omega\) is linear in \(\boldsymbol\phi\), and so
+is \(v\). The antisymmetric term is therefore absorbed exactly by
+\(v(\boldsymbol\phi)\): any pair \((d_\mathrm{ccw}, d_\mathrm{cw})\)
+with the same mean fits steady-state data equally well, with a
+correspondingly shifted \(v\). Only \(\bar d\) is identifiable, through
+the kink of \(|\omega|\) at \(\omega = 0\), which requires both turning
+directions in the grid. The \texttt{cor} variant fits
+\(u_1 = v(\boldsymbol\phi) + \bar d\,|\hat\omega|\) with \(\hat\omega\)
+the model's own yaw rate and exports \(\bar d\); on a simulated robot
+with the twin's 14.5 / 16.1 mm split it recovers 15.3 mm, the mean. The
+design matrix \([1, f_L, f_R, \omega^+, \omega^-]\) built with the
+model's own \(\hat\omega\) has rank 4 of 5 on the lab's tables (with
+the measured \(\omega\) it has full rank only through the noise). The twin's split is therefore a modelling choice that
+steady-state data cannot confirm; whether transient data break the
+degeneracy is an open question we test in §\ref{sec:protocol} \hw{step-response fit on
+robot \#1: are separate CW and CCW offsets identified, with CIs}. More
+generally we report the Fisher information of the fitted model and the
+parameter standard deviations against the Cramér--Rao bound, as Censi et
+al. \cite{censi2013calibration} do for odometry, and the condition
+number of the design, which exposes the trade-off between \(p_0\) and
+\(\gamma\) on grids that start far above the dead zone.
+
+\subsection{Inverse map and feasible
+set}\label{sec:inverse}
+
+For the \texttt{lin} and \texttt{cor} variants \((v, \omega)\) is affine
+in \((f_L, f_R)\), so a commanded \((v,\omega)\) is inverted by a 2×2
+solve followed by the inverse activation
+\(p_k = p_{0,k} + f_k^{1/\gamma_k}\), clipped to the drive range. The
+image of the activation box under the affine part is a parallelogram
+(four constraints \(a_i v + b_i \omega \le c_i\)) that we export as the
+feasible set; targets outside it are projected. The whole inverse
+fits in a few hundred bytes of C and needs no lookup table.
+
+\subsection{Lag, dead time and noise}\label{sec:lag}
+
+Steps and pseudo-random binary sequences switching every 0.1--0.5 s, cut
+into chunks between re-centrings, give a first-order lag \(\tau\) and
+dead time per robot, by fitting the integrated response as in Seegmiller
+et al. \cite{seegmiller2013ipem}. Sixty-second clockwise and
+counter-clockwise circles give the heading diffusion \(D_r\) (Brownian
+or Ornstein--Uhlenbeck, whichever the autocorrelation supports), speed
+jitter and lateral slip; the mean-squared displacement is fitted on a
+log scale with bootstrap intervals \cite{bailey2022logit}. A 60 s
+static recording gives the tracker's noise floor.
+
+\subsection{Population model, prior and few-shot
+fit}\label{sec:prior}
+
+Let
+\(\boldsymbol\theta = (p_{0,L}, p_{0,R}, \gamma_L, \gamma_R, \mathrm{vec}\,\mathbf C)\).
+From \(S\) fully calibrated robots we form the population prior, using
+each robot's day-averaged \(\boldsymbol\theta_r\) (the day level
+\(\boldsymbol\Sigma_d\) is estimated separately in
+§\ref{sec:variance}),
+\(\boldsymbol\theta \sim \mathcal N(\boldsymbol\mu, \boldsymbol\Sigma)\)
+with \(\boldsymbol\mu\) the sample mean and \(\boldsymbol\Sigma\) the
+sample covariance shrunk half-way towards its diagonal and floored by a
+diagonal term that shrinks as \(1/\sqrt S\); for \(S = 1\) the prior is
+the reference robot's parameters with the floor alone, the ``one
+reference robot with inflated variance'' fallback. Cross-covariance
+between the nonlinear block \((p_0, \gamma)\) and the coefficient rows,
+and between rows, is dropped because it is not estimable from a handful
+of robots; the price is a prior that is less informative and may
+misstate its confidence along correlated directions. The segment noise
+\(\sigma_o\) per output is the residual of the full fits.
+
+A new robot with \(k\) segments is fitted by maximising the posterior,
+\begin{multline}
+\hat{\boldsymbol\theta} = \arg\min_{\boldsymbol\theta}\ \sum_{i=1}^{k} \sum_{o} \frac{\bigl(y_{io} - F_o(L_i,R_i,V_i;\boldsymbol\theta)\bigr)^2}{\sigma_o^2} \\
++ (\boldsymbol\theta-\boldsymbol\mu)^\top \boldsymbol\Sigma^{-1} (\boldsymbol\theta-\boldsymbol\mu),
+\label{eq:map}
+\end{multline}
+by the same variable projection as §\ref{sec:forward-map}: given \((p_0,\gamma)\) each
+coefficient row is a Gaussian-prior least-squares problem with a
+closed-form solution and posterior covariance, and Nelder--Mead searches
+the four nonlinear parameters from the prior mean. With \(k = 0\) the
+estimate is the prior mean; with \(k\) large it approaches the full fit.
+The posterior covariance of the rows gives a predictive interval for the
+mean twist at every drive cell, whose coverage we report.
+
+\subsection{Which segments to
+measure}\label{sec:design}
+
+Given the prior, the information a segment at cell \(c\) adds is
+\(\mathbf J_c^\top \mathbf R^{-1} \mathbf J_c\), with \(\mathbf J_c\)
+the \(3 \times \dim\boldsymbol\theta\) Jacobian of the twist at the
+prior mean and \(\mathbf R = \mathrm{diag}(\sigma_o^2)\). We choose
+segments greedily to maximise
+\(\log\det(\boldsymbol\Sigma^{-1} + \sum_c \mathbf J_c^\top \mathbf R^{-1} \mathbf J_c)\)
+(Bayesian D-optimality
+\cite{chaloner1995design, sun2008observability}), allowing repeated
+cells. Because the model is nonlinear the design is local to the prior
+mean; in the simulation of §\ref{sec:simulation} the chosen cells are the single-motor
+pivots, full power on both motors, and cells at the prior's dead-zone
+edge. The alternative of refitting after each segment and
+re-designing \cite{rainforth2024design} is a straightforward extension.
+
+\subsection{Variance decomposition}\label{sec:variance}
+
+With every robot measured on \(D\) days with \(n\) replicates per cell,
+each cell and output is a balanced nested design (robot ⊃ day ⊃
+segment). Method-of-moments estimates of the three variance components,
+averaged over the cells with motion, give the robot, day and segment
+standard deviations per output and their fractions of the total. The
+robot component is what the population prior needs; the day component is
+drift; the segment component is the noise floor of one measurement.
+
+\subsection{Baselines}\label{sec:baselines}
+
+For the few-shot study we compare (i) \texttt{hier}, the MAP fit above
+with a prior from \(S \in \{1, 2, 4\}\) robots; (ii)
+\texttt{scratch}, the full variable-projection fit on the \(k\) segments
+alone, which is undefined below about eight segments; (iii)
+\texttt{ref}, the prior mean used without data; (iv) \texttt{ref\_gain},
+the prior mean corrected by a per-output affine map
+\(y_o = a_o\,\hat y_o + b_o\) fitted on the \(k\) segments, the
+master/slave standardisation of §\ref{sec:rw-transfer}; and (v) a Klingner-style
+black-box search \cite{klingner2014droplet} over the same segment
+budget \hw{run on hardware only; not in the simulation}. Segments are chosen at random from the robot's
+measured pool or by the D-optimal design, and every held-out robot is
+scored on its measured segments outside the chosen subset (in
+simulation, on the noise-free truth over the whole grid).

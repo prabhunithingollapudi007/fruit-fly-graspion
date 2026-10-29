@@ -1,0 +1,41 @@
+\section{Discussion}\label{sec:discussion}
+
+\hw{this section argues from the simulation and the literature only;
+rewrite from the measurements}
+
+\textbf{What the simulation can and cannot say.} In the simulation the
+prior's value is concentrated below 32 segments, and a one-robot prior
+is within 30 \% of a four-robot prior from eight segments on, because
+the population was drawn from the model family. On real robots the risk
+is misspecification: a robot whose dead zone or reversal point falls
+outside the family would be pulled towards the prior and look calibrated
+when it is not. The predictive-interval coverage and the held-out
+measured segments detect this; the full grids of phase B locate it.
+
+\textbf{Drift.} The day component of the decomposition, the battery term
+of the \texttt{bat} variant and the three-day repeat on robot \#1 are
+designed to quantify what the Kilobot literature reports qualitatively
+\cite{raoufi2023individuality, rubenstein2014kilobot}. If drift turns
+out to be a sizeable fraction of the robot component, a recursive
+least-squares update of the thirteen parameters during operation,
+keyed by chip serial, is one extension
+\cite{martinelli2007selfcalibration, roy1999selfcalibration}.
+
+\textbf{Outlook: setting heterogeneity.} If the measured robot
+component dominates the decomposition, calibration could remove it, and
+the same machinery could set a chosen heterogeneity: Giomi et al.
+\cite{giomi2013bristlebots} show that a per-robot spin-to-walk ratio
+selects the collective state, and Siebers et al.
+\cite{siebers2023disorder} exploit disorder deliberately. Whether a
+calibrated GRASPion fleet can serve as an active-matter experiment with
+a controlled disorder parameter depends on the measured decomposition.
+
+\textbf{Open questions the data will decide.} Whether the two motors add
+linearly, as Notomista et al. \cite{notomista2019brushbot} derive, or
+interact; whether transient data identify the CW / CCW split that
+steady-state data cannot; whether the PWM frequency changes the map's
+shape or only its gain; and whether the onboard magnetometer, once its
+hard-iron offset \cite{vasconcelos2011magnetometer} and the offset
+\(b(L,R)\) that the running motors induce at each drive level are
+mapped, can carry the yaw-rate part
+of recalibration without a camera.

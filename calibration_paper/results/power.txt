@@ -1,0 +1,85 @@
+spread 0.3 n 4 sim 0: omega robot SD est 0.076 true 0.078; hier(N=3) k4 0.55 k16 0.24; scratch k16 1.26; full 0.05
+spread 0.3 n 4 sim 1: omega robot SD est 0.133 true 0.134; hier(N=3) k4 0.47 k16 0.22; scratch k16 0.54; full 0.04
+spread 0.3 n 4 sim 2: omega robot SD est 0.102 true 0.106; hier(N=3) k4 0.80 k16 0.18; scratch k16 0.29; full 0.06
+spread 0.3 n 4 sim 3: omega robot SD est 0.142 true 0.144; hier(N=3) k4 0.43 k16 0.24; scratch k16 0.36; full 0.06
+spread 0.3 n 4 sim 4: omega robot SD est 0.114 true 0.117; hier(N=3) k4 0.33 k16 0.20; scratch k16 0.42; full 0.05
+spread 0.3 n 4 sim 5: omega robot SD est 0.075 true 0.081; hier(N=3) k4 0.57 k16 0.23; scratch k16 0.57; full 0.06
+spread 0.3 n 4 sim 6: omega robot SD est 0.119 true 0.121; hier(N=3) k4 0.52 k16 0.30; scratch k16 1.13; full 0.05
+spread 0.3 n 4 sim 7: omega robot SD est 0.086 true 0.090; hier(N=3) k4 0.56 k16 0.22; scratch k16 0.35; full 0.06
+spread 0.3 n 6 sim 0: omega robot SD est 0.064 true 0.067; hier(N=5) k4 0.33 k16 0.21; scratch k16 0.34; full 0.05
+spread 0.3 n 6 sim 1: omega robot SD est 0.134 true 0.136; hier(N=5) k4 0.40 k16 0.21; scratch k16 0.47; full 0.05
+spread 0.3 n 6 sim 2: omega robot SD est 0.125 true 0.128; hier(N=5) k4 0.37 k16 0.19; scratch k16 0.29; full 0.05
+spread 0.3 n 6 sim 3: omega robot SD est 0.136 true 0.137; hier(N=5) k4 0.50 k16 0.24; scratch k16 0.36; full 0.06
+spread 0.3 n 6 sim 4: omega robot SD est 0.101 true 0.103; hier(N=5) k4 0.43 k16 0.21; scratch k16 0.35; full 0.05
+spread 0.3 n 6 sim 5: omega robot SD est 0.082 true 0.086; hier(N=5) k4 0.57 k16 0.24; scratch k16 0.85; full 0.05
+spread 0.3 n 6 sim 6: omega robot SD est 0.136 true 0.137; hier(N=5) k4 0.52 k16 0.20; scratch k16 0.92; full 0.05
+spread 0.3 n 6 sim 7: omega robot SD est 0.089 true 0.092; hier(N=5) k4 0.58 k16 0.20; scratch k16 0.33; full 0.05
+spread 0.3 n 8 sim 0: omega robot SD est 0.086 true 0.088; hier(N=7) k4 0.38 k16 0.18; scratch k16 0.29; full 0.05
+spread 0.3 n 8 sim 1: omega robot SD est 0.151 true 0.152; hier(N=7) k4 0.40 k16 0.24; scratch k16 0.51; full 0.05
+spread 0.3 n 8 sim 2: omega robot SD est 0.124 true 0.127; hier(N=7) k4 0.42 k16 0.20; scratch k16 0.31; full 0.06
+spread 0.3 n 8 sim 3: omega robot SD est 0.120 true 0.122; hier(N=7) k4 0.42 k16 0.20; scratch k16 0.29; full 0.06
+spread 0.3 n 8 sim 4: omega robot SD est 0.088 true 0.090; hier(N=7) k4 0.42 k16 0.16; scratch k16 0.36; full 0.05
+spread 0.3 n 8 sim 5: omega robot SD est 0.084 true 0.087; hier(N=7) k4 0.53 k16 0.23; scratch k16 0.63; full 0.05
+spread 0.3 n 8 sim 6: omega robot SD est 0.131 true 0.132; hier(N=7) k4 0.46 k16 0.24; scratch k16 0.41; full 0.05
+spread 0.3 n 8 sim 7: omega robot SD est 0.077 true 0.081; hier(N=7) k4 0.38 k16 0.20; scratch k16 0.31; full 0.05
+spread 1.0 n 4 sim 0: omega robot SD est 0.263 true 0.274; hier(N=3) k4 0.78 k16 0.25; scratch k16 0.48; full 0.06
+spread 1.0 n 4 sim 1: omega robot SD est 0.463 true 0.466; hier(N=3) k4 0.84 k16 0.25; scratch k16 0.41; full 0.04
+spread 1.0 n 4 sim 2: omega robot SD est 0.359 true 0.368; hier(N=3) k4 1.10 k16 0.18; scratch k16 0.29; full 0.06
+spread 1.0 n 4 sim 3: omega robot SD est 0.480 true 0.483; hier(N=3) k4 0.73 k16 0.25; scratch k16 0.35; full 0.06
+spread 1.0 n 4 sim 4: omega robot SD est 0.400 true 0.408; hier(N=3) k4 0.52 k16 0.22; scratch k16 0.42; full 0.05
+spread 1.0 n 4 sim 5: omega robot SD est 0.245 true 0.261; hier(N=3) k4 0.72 k16 0.25; scratch k16 0.66; full 0.06
+spread 1.0 n 4 sim 6: omega robot SD est 0.455 true 0.466; hier(N=3) k4 0.64 k16 0.30; scratch k16 1.18; full 0.05
+spread 1.0 n 4 sim 7: omega robot SD est 0.302 true 0.309; hier(N=3) k4 0.75 k16 0.25; scratch k16 0.35; full 0.06
+spread 1.0 n 6 sim 0: omega robot SD est 0.225 true 0.236; hier(N=5) k4 0.50 k16 0.24; scratch k16 0.44; full 0.05
+spread 1.0 n 6 sim 1: omega robot SD est 0.453 true 0.456; hier(N=5) k4 0.56 k16 0.23; scratch k16 0.46; full 0.05
+spread 1.0 n 6 sim 2: omega robot SD est 0.448 true 0.456; hier(N=5) k4 0.42 k16 0.22; scratch k16 0.29; full 0.05
+spread 1.0 n 6 sim 3: omega robot SD est 0.446 true 0.450; hier(N=5) k4 0.68 k16 0.26; scratch k16 0.35; full 0.06
+spread 1.0 n 6 sim 4: omega robot SD est 0.347 true 0.353; hier(N=5) k4 0.65 k16 0.23; scratch k16 0.35; full 0.05
+spread 1.0 n 6 sim 5: omega robot SD est 0.275 true 0.287; hier(N=5) k4 0.68 k16 0.26; scratch k16 0.66; full 0.05
+spread 1.0 n 6 sim 6: omega robot SD est 0.507 true 0.514; hier(N=5) k4 0.66 k16 0.21; scratch k16 1.12; full 0.05
+spread 1.0 n 6 sim 7: omega robot SD est 0.308 true 0.317; hier(N=5) k4 0.66 k16 0.22; scratch k16 0.32; full 0.05
+spread 1.0 n 8 sim 0: omega robot SD est 0.300 true 0.308; hier(N=7) k4 0.45 k16 0.20; scratch k16 0.30; full 0.05
+spread 1.0 n 8 sim 1: omega robot SD est 0.508 true 0.511; hier(N=7) k4 0.57 k16 0.29; scratch k16 0.46; full 0.05
+spread 1.0 n 8 sim 2: omega robot SD est 0.433 true 0.441; hier(N=7) k4 0.58 k16 0.23; scratch k16 0.31; full 0.06
+spread 1.0 n 8 sim 3: omega robot SD est 0.393 true 0.397; hier(N=7) k4 0.54 k16 0.24; scratch k16 0.29; full 0.06
+spread 1.0 n 8 sim 4: omega robot SD est 0.301 true 0.308; hier(N=7) k4 0.51 k16 0.19; scratch k16 0.36; full 0.05
+spread 1.0 n 8 sim 5: omega robot SD est 0.291 true 0.300; hier(N=7) k4 0.82 k16 0.26; scratch k16 0.62; full 0.05
+spread 1.0 n 8 sim 6: omega robot SD est 0.487 true 0.494; hier(N=7) k4 0.56 k16 0.25; scratch k16 0.42; full 0.05
+spread 1.0 n 8 sim 7: omega robot SD est 0.269 true 0.278; hier(N=7) k4 0.41 k16 0.23; scratch k16 0.31; full 0.05
+spread 3.0 n 4 sim 0: omega robot SD est 0.856 true 0.904; hier(N=3) k4 1.20 k16 0.33; scratch k16 4.41; full 0.05
+spread 3.0 n 4 sim 1: omega robot SD est 1.548 true 1.558; hier(N=3) k4 2.47 k16 0.29; scratch k16 0.38; full 0.05
+spread 3.0 n 4 sim 2: omega robot SD est 1.290 true 1.316; hier(N=3) k4 1.78 k16 0.24; scratch k16 0.58; full 0.06
+spread 3.0 n 4 sim 3: omega robot SD est 1.530 true 1.535; hier(N=3) k4 1.34 k16 0.32; scratch k16 0.45; full 0.06
+spread 3.0 n 4 sim 4: omega robot SD est 1.367 true 1.405; hier(N=3) k4 1.04 k16 0.48; scratch k16 0.42; full 0.05
+spread 3.0 n 4 sim 5: omega robot SD est 0.671 true 0.710; hier(N=3) k4 1.44 k16 0.40; scratch k16 0.70; full 0.06
+spread 3.0 n 4 sim 6: omega robot SD est 2.172 true 2.266; hier(N=3) k4 0.91 k16 0.31; scratch k16 1.18; full 0.05
+spread 3.0 n 4 sim 7: omega robot SD est 0.954 true 0.973; hier(N=3) k4 1.32 k16 0.32; scratch k16 0.36; full 0.06
+spread 3.0 n 6 sim 0: omega robot SD est 0.751 true 0.794; hier(N=5) k4 0.73 k16 0.29; scratch k16 0.71; full 0.05
+spread 3.0 n 6 sim 1: omega robot SD est 1.427 true 1.436; hier(N=5) k4 0.68 k16 0.25; scratch k16 0.38; full 0.05
+spread 3.0 n 6 sim 2: omega robot SD est 1.685 true 1.708; hier(N=5) k4 0.66 k16 0.27; scratch k16 0.32; full 0.05
+spread 3.0 n 6 sim 3: omega robot SD est 1.343 true 1.352; hier(N=5) k4 0.89 k16 0.41; scratch k16 0.45; full 0.06
+spread 3.0 n 6 sim 4: omega robot SD est 1.143 true 1.174; hier(N=5) k4 0.94 k16 0.27; scratch k16 0.36; full 0.05
+spread 3.0 n 6 sim 5: omega robot SD est 0.751 true 0.781; hier(N=5) k4 1.02 k16 0.29; scratch k16 0.79; full 0.05
+spread 3.0 n 6 sim 6: omega robot SD est 2.252 true 2.317; hier(N=5) k4 1.12 k16 0.23; scratch k16 1.18; full 0.05
+spread 3.0 n 6 sim 7: omega robot SD est 1.004 true 1.041; hier(N=5) k4 1.10 k16 0.29; scratch k16 0.31; full 0.05
+spread 3.0 n 8 sim 0: omega robot SD est 1.066 true 1.094; hier(N=7) k4 0.54 k16 0.27; scratch k16 0.31; full 0.05
+spread 3.0 n 8 sim 1: omega robot SD est 1.615 true 1.624; hier(N=7) k4 0.95 k16 0.31; scratch k16 0.42; full 0.05
+spread 3.0 n 8 sim 2: omega robot SD est 1.552 true 1.574; hier(N=7) k4 1.03 k16 0.27; scratch k16 0.37; full 0.05
+spread 3.0 n 8 sim 3: omega robot SD est 1.171 true 1.178; hier(N=7) k4 0.87 k16 0.30; scratch k16 0.37; full 0.06
+spread 3.0 n 8 sim 4: omega robot SD est 0.991 true 1.021; hier(N=7) k4 1.01 k16 0.22; scratch k16 0.37; full 0.05
+spread 3.0 n 8 sim 5: omega robot SD est 1.009 true 1.027; hier(N=7) k4 1.16 k16 0.28; scratch k16 0.36; full 0.05
+spread 3.0 n 8 sim 6: omega robot SD est 2.112 true 2.167; hier(N=7) k4 0.65 k16 0.29; scratch k16 0.41; full 0.05
+spread 3.0 n 8 sim 7: omega robot SD est 0.874 true 0.910; hier(N=7) k4 0.78 k16 0.31; scratch k16 0.30; full 0.05
+
+summary (median over simulations): estimated robot SD of omega over the population's (n robots stand in for the population), and figure-3 scores
+spread  n   SDratio[q10,q90]   hier/N=1 k0  k4  k16 | hier/N=n-1 k0  k4  k16 | scratch k16 | full
+  0.3  4   0.87 [0.61,1.09]      0.84  0.58  0.26 |   0.67  0.53  0.22 |   0.48  | 0.06
+  0.3  6   0.91 [0.62,1.09]      0.86  0.56  0.25 |   0.70  0.46  0.21 |   0.35  | 0.05
+  0.3  8   0.84 [0.66,1.10]      0.83  0.57  0.25 |   0.65  0.42  0.20 |   0.33  | 0.05
+  1.0  4   0.91 [0.61,1.12]      2.84  0.74  0.28 |   2.36  0.74  0.25 |   0.41  | 0.06
+  1.0  6   0.95 [0.62,1.12]      2.93  0.65  0.27 |   2.35  0.65  0.23 |   0.40  | 0.05
+  1.0  8   0.83 [0.68,1.18]      2.87  0.66  0.27 |   2.13  0.55  0.24 |   0.34  | 0.05
+  3.0  4   0.97 [0.58,1.26]     10.13  1.20  0.41 |   8.39  1.33  0.32 |   0.51  | 0.05
+  3.0  6   0.90 [0.55,1.35]      9.15  1.14  0.37 |   7.51  0.92  0.28 |   0.42  | 0.05
+  3.0  8   0.81 [0.70,1.28]      8.28  1.32  0.36 |   6.06  0.91  0.29 |   0.37  | 0.05
+wrote calibration_paper/results/power.json

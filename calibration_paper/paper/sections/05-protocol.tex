@@ -1,0 +1,37 @@
+\section{Experimental protocol}\label{sec:protocol}
+
+The protocol and its kill criteria are fixed here before any data
+exist. \hw{nothing in this section has been run}
+
+\textbf{Phase A, one robot in depth.} The 9×9 grid
+\(|L|, |R| \in \{0, 55, 60, 70, 80, 90, 100, 110, 120\}\), which
+includes single-motor and dead-zone cells, plus eight reverse-polarity
+checks, in five randomised blocks per battery, 3 s drive and
+0.8 s rest, re-centred between segments (about 440 segments and 50--65
+min per robot, more than one battery); steps and PRBS; CW and CCW
+circles; repeated on three days. Before fixing the model form, the top
+of the grid is checked for non-monotonic speed or direction reversal
+\cite{cicconofri2016inversion, kim2020millibristle}, and the two PWM
+modes are compared on five cells. Phase A answers the model question and
+the within-robot drift.
+
+\textbf{Phase B, five to eight robots with full grids.} The
+leave-one-robot-out ground truth, the variance decomposition and the
+population prior. In the simulation of §\ref{sec:sim-power} this
+number sets how well the between-robot spread is known rather than how
+well a new robot can be calibrated; if real robots behave like that
+population, five or six robots are a reasonable minimum.
+
+\textbf{Phase C, held-out robots with few segments.} The few-shot curve
+(Fig.~\ref{fig:fewshot}): error against \(k \in \{0, 1, 2, 4, \dots,
+64\}\) for random and designed segments and priors from one, two and
+four robots, against the baselines of §\ref{sec:baselines}, and the ``same command, same motion'' test: the
+spread of achieved motion when every robot is commanded the same
+\((v,\omega)\) through its own inverse map, on the intersection of the
+robots' feasible sets, before and after calibration.
+
+\textbf{Kill criteria.} If the between-robot spread is within the
+segment noise, the few-shot curve is flat and the result is that one map
+fits all; if the spread is large and unstructured, the prior will not
+help and the result is a measurement of heterogeneity and drift. Both
+are reported as such.

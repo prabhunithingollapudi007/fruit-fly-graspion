@@ -1,0 +1,34 @@
+  robot 0: full-fit score 0.072  (27 s)
+  robot 1: full-fit score 0.049  (45 s)
+  robot 2: full-fit score 0.056  (64 s)
+  robot 3: full-fit score 0.044  (81 s)
+  robot 4: full-fit score 0.046  (101 s)
+  robot 5: full-fit score 0.050  (120 s)
+  robot 6: full-fit score 0.037  (138 s)
+  robot 7: full-fit score 0.076  (155 s)
+full-grid fit (floor): median score 0.050  [0.045, 0.060]   (score 1 = one noise scale: (0.005, 0.005, 0.1))
+
+design random: median score vs k (columns method/N)
+   k     scratch/0       ref/1  ref_gain/1      hier/1       ref/2  ref_gain/2      hier/2       ref/4  ref_gain/4      hier/4
+   0           nan       2.156       2.156       2.156       1.965       1.965       1.965       1.986       1.986       1.986
+   1           nan       2.156       2.071       1.802       1.965       1.939       1.210       1.986       1.615       1.169
+   2           nan       2.156       2.268       0.982       1.965       3.840       0.822       1.986       2.171       0.808
+   4           nan       2.156       1.204       0.671       1.965       1.080       0.560       1.986       0.959       0.561
+   8         1.012       2.156       0.924       0.448       1.965       0.800       0.345       1.986       0.843       0.347
+  16         0.354       2.156       0.874       0.285       1.965       0.769       0.252       1.986       0.748       0.228
+  32         0.189       2.156       0.831       0.188       1.965       0.718       0.169       1.986       0.680       0.158
+  64         0.123       2.156       0.790       0.138       1.965       0.718       0.135       1.986       0.674       0.118
+
+design dopt: median score vs k (columns method/N)
+   k     scratch/0       ref/1  ref_gain/1      hier/1       ref/2  ref_gain/2      hier/2       ref/4  ref_gain/4      hier/4
+   0           nan       2.015       2.015       2.015       2.201       2.201       2.201       1.883       1.883       1.883
+   1           nan       2.015       2.387       1.147       2.201       2.412       1.003       1.883       2.213       0.903
+   2           nan       2.015       2.361       0.906       2.201       2.105       0.865       1.883       1.276       0.685
+   4           nan       2.015       0.918       0.388       2.201       0.973       0.312       1.883       0.772       0.328
+   8         0.400       2.015       0.824       0.306       2.201       0.941       0.312       1.883       0.627       0.240
+  16         0.247       2.015       0.809       0.218       2.201       0.895       0.214       1.883       0.617       0.192
+  32         0.156       2.015       0.772       0.157       2.201       0.888       0.160       1.883       0.600       0.148
+  64         0.115       2.015       0.772       0.119       2.201       0.880       0.125       1.883       0.589       0.106
+
+95 % interval coverage of the true mean twist, 'hier', random design: N1 k0 0.99, N1 k4 0.85, N1 k16 0.85, N1 k64 0.84, N2 k0 1.00, N2 k4 0.89, N2 k16 0.88, N2 k64 0.85, N4 k0 1.00, N4 k4 0.88, N4 k16 0.95, N4 k64 0.92
+wrote calibration_paper/results/loro_spread1.json
