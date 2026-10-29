@@ -1,0 +1,144 @@
+\section{Hardware results}\label{sec:hardware-results}
+
+\hw{this section is a skeleton: each slot names the number or figure it
+waits for; phase A fills \S\ref{sec:hw-map}, phase B
+\S\ref{sec:hw-variability}, phase C \S\ref{sec:hw-fewshot} and
+\S\ref{sec:hw-same}}
+
+\subsection{The map of robot \#1}\label{sec:hw-map}
+
+Fig.~\ref{fig:map} shows \(u_1\) and \(\omega\) over the \((L,R)\) grid
+with \hw{n} replicates per cell, measured over \hw{D} days. Grouped
+cross-validation (Table~\ref{tab:hw-cv}) selects the \hw{lin / int /
+cor / bat} variant with an error of \hw{x} cm/s in \(u_1\) and \hw{y}
+rad/s in \(\omega\), against \hw{x, y} for the best polynomial, \hw{x,
+y} for the Gaussian process and \hw{x, y} for the neural network. The
+fitted dead zones are \hw{p0L, p0R} and the exponents \hw{gammaL,
+gammaR}; the interaction term \(f_L f_R\) \hw{is / is not} supported by
+the data. At the top of the grid the speed \hw{stays monotone / reverses
+at power P}. The 40 kHz PWM mode \hw{changes only the gain by G \% /
+changes the dead zone and exponent}. The mean centre-of-rotation offset
+is \(\bar d = \) \hw{d} mm (bootstrap 95 \% interval \hw{lo--hi}); the
+step responses \hw{do / do not} separate the clockwise and
+counter-clockwise offsets. The lag is \(\tau = \) \hw{tau} s with a dead
+time of \hw{t0} s, the heading diffusion \(D_r = \) \hw{Dr} rad\(^2\)/s
+\hw{Brownian / OU}. Parameter standard deviations are within \hw{factor}
+of the Cramér--Rao bound. Over three days the map drifted by \hw{drift}
+in gain and \hw{drift} in dead zone, and the \texttt{bat} term accounts
+for \hw{share} of it.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][5cm][c]{0.95\columnwidth}{\centering \hw{Fig.~1: \(u_1\) and \(\omega\) over the grid, replicates, fitted map, top-of-grid check}}}
+\caption{Robot \#1's forward map. \hw{caption}}
+\label{fig:map}
+\end{figure}
+
+\begin{table}[t]
+\caption{Grouped cross-validation on robot \#1 (RMSE on held-out cells). \hw{fill}}
+\label{tab:hw-cv}
+\centering\footnotesize
+\begin{tabular}{lcc}
+\toprule
+model & \(u_1\) [cm/s] & \(\omega\) [rad/s] \\
+\midrule
+\texttt{lin} & -- & -- \\
+\texttt{int} & -- & -- \\
+\texttt{cor} & -- & -- \\
+\texttt{bat} & -- & -- \\
+polynomial (plane / quadratic / cubic) & -- & -- \\
+Gaussian process & -- & -- \\
+neural network & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{How different are \hw{N} robots}\label{sec:hw-variability}
+
+Fig.~\ref{fig:variance} and Table~\ref{tab:hw-variance} give the robot
+/ day / segment standard deviations per output over \hw{N} robots and
+\hw{D} days. The robot component is \hw{x} cm/s in \(u_1\) and \hw{y}
+rad/s in \(\omega\), \hw{r} times the segment noise and \hw{r} times
+the day component; the fractions are \hw{robot / day / segment}. The
+between-robot differences are \hw{dominated by gain / by dead zone /
+spread across parameters} (Fig.~\ref{fig:variance}, right), and the
+fitted population prior has \hw{SDs per parameter}.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][5cm][c]{0.95\columnwidth}{\centering \hw{Fig.~2: variance components per output; per-parameter spread of the fitted maps; the population prior}}}
+\caption{Variability across \hw{N} robots and \hw{D} days. \hw{caption}}
+\label{fig:variance}
+\end{figure}
+
+\begin{table}[t]
+\caption{Measured robot, day and segment standard deviations (compare Table~\ref{tab:1}). \hw{fill}}
+\label{tab:hw-variance}
+\centering\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+output & robot SD & day SD & segment SD & fractions \\
+\midrule
+\(u_1\) [m/s] & -- & -- & -- & -- \\
+\(u_2\) [m/s] & -- & -- & -- & -- \\
+\(\omega\) [rad/s] & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Calibrating a new robot}\label{sec:hw-fewshot}
+
+Fig.~\ref{fig:fewshot} and Table~\ref{tab:hw-fewshot} give the
+leave-one-robot-out error against the number of segments \(k\), scored
+on each robot's measured segments outside the chosen subset. With a
+prior from \hw{S = N-1} robots and \hw{k} designed segments (about \hw{t}
+minutes of driving) the error reaches \hw{x} noise units, \hw{r} times
+better than fitting from scratch at the same budget and \hw{r} times
+better than the master/slave standardisation, which plateaus at \hw{x}.
+The Klingner-style black-box search reaches \hw{x} after \hw{k}
+segments. A prior from one robot \hw{is / is not} enough beyond \(k =
+\) \hw{k}. The 95 \% predictive intervals cover the held-out segments
+\hw{c} of the time. \hw{if any robot falls outside the model family,
+say which and how it showed}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][5cm][c]{0.95\columnwidth}{\centering \hw{Fig.~3: error vs \(k\), random vs designed, priors from 1 / 2 / 4 robots, baselines, coverage}}}
+\caption{Few-shot calibration of held-out robots. \hw{caption}}
+\label{fig:fewshot}
+\end{figure}
+
+\begin{table*}[t]
+\caption{Measured few-shot error against \(k\), median over held-out robots (compare Table~\ref{tab:2}). \hw{fill}}
+\label{tab:hw-fewshot}
+\centering\footnotesize
+\begin{tabular}{lcccccccc}
+\toprule
+\(k\) & scratch & black-box & ref\_gain & hier S=1 & hier S=2 & hier S=4 & hier S=1, dopt & hier S=4, dopt \\
+\midrule
+2 & -- & -- & -- & -- & -- & -- & -- & -- \\
+4 & -- & -- & -- & -- & -- & -- & -- & -- \\
+8 & -- & -- & -- & -- & -- & -- & -- & -- \\
+16 & -- & -- & -- & -- & -- & -- & -- & -- \\
+32 & -- & -- & -- & -- & -- & -- & -- & -- \\
+64 & -- & -- & -- & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Same command, same motion}\label{sec:hw-same}
+
+Fig.~\ref{fig:same} shows the achieved \((v,\omega)\) when every robot
+is commanded the same targets through its own inverse map, on the
+intersection of the feasible sets. Before calibration (one shared map)
+the across-robot spread is \hw{x} cm/s and \hw{y} rad/s; after
+per-robot calibration it is \hw{x} cm/s and \hw{y} rad/s, \hw{r} times
+the segment noise. \hw{whether the residual spread is drift, model
+error or noise}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][5cm][c]{0.95\columnwidth}{\centering \hw{Fig.~4: achieved vs commanded \((v,\omega)\) per robot, before and after calibration}}}
+\caption{Same commanded velocity on all robots. \hw{caption}}
+\label{fig:same}
+\end{figure}

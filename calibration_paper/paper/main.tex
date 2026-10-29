@@ -1,0 +1,71 @@
+% Calibration paper, draft v0.1 (2026-10-29). IEEEtran journal layout; switch to
+% \documentclass[conference]{IEEEtran} for IROS/ICRA or to revtex4-2 for Phys. Rev. E.
+%
+% Build:  pdflatex main && bibtex main && pdflatex main && pdflatex main   (or latexmk -pdf main)
+%
+% Status: everything marked [HW: ...] is unmeasured and says what it waits for; list them with
+%   grep -n "hw{" sections/*.tex
+% Section 6 is synthetic; bib entries marked "abstract only" or "verify" must be re-read before submission.
+\documentclass[journal]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{textcomp}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\DeclareUnicodeCharacter{00A7}{\S}
+\DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}
+\DeclareUnicodeCharacter{00B1}{\ensuremath{\pm}}
+\DeclareUnicodeCharacter{2212}{\ensuremath{-}}
+\DeclareUnicodeCharacter{2192}{\ensuremath{\rightarrow}}
+\DeclareUnicodeCharacter{2283}{\ensuremath{\supset}}
+\DeclareUnicodeCharacter{2248}{\ensuremath{\approx}}
+\DeclareUnicodeCharacter{2264}{\ensuremath{\leq}}
+\DeclareUnicodeCharacter{2265}{\ensuremath{\geq}}
+
+\graphicspath{{figures/}}
+\newcommand{\hw}[1]{\textbf{[HW: #1]}}     % an unmeasured hardware result and what it waits for
+
+\begin{document}
+
+\title{How Different Are Identical Vibration Robots?\\
+Few-Shot Calibration of a Brainbot Fleet from a Population Prior}
+
+\author{Prabhu~Nithin~Gollapudi,
+        [co-authors]%
+\thanks{P. N. Gollapudi is with Friedrich-Alexander-Universit\"at Erlangen-N\"urnberg, Germany.}%
+\thanks{[GRASP lab, University of Li\`ege: authorship and affiliations to be agreed.]}}
+
+\markboth{Draft v0.1, 29 October 2026}{Gollapudi \MakeLowercase{\textit{et al.}}: Few-shot calibration of a brainbot fleet}
+
+\maketitle
+
+\begin{abstract}
+\input{sections/00-abstract}
+\end{abstract}
+
+\begin{IEEEkeywords}
+Calibration and identification, swarm robotics, active matter, vibration-driven robots, Bayesian experimental design.
+\end{IEEEkeywords}
+
+\input{sections/01-introduction}
+\input{sections/02-related-work}
+\input{sections/03-robot-rig-problem}
+\input{sections/04-method}
+\input{sections/05-protocol}
+\input{sections/06-simulation}
+\input{sections/07-hardware-results}
+\input{sections/08-discussion}
+\input{sections/09-limitations}
+\input{sections/10-conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

@@ -1,0 +1,20 @@
+Nominally identical vibration-driven robots differ in speed, turning
+bias and dead zone, and the differences drift with battery and wear. We
+study the calibration of GRASPion, an open two-motor brainbot, as a
+problem in its own right: what is the simplest model of its planar
+motion from its two motor powers, how different are nominally identical
+robots and how fast does one drift, and how few measurements does a new
+robot need when a few calibrated robots exist. We present a grey-box
+forward map (a per-motor dead zone and power law feeding a twist linear
+in the two activations), show that steady-state data identify only the
+mean of the clockwise and counter-clockwise centre-of-rotation offsets
+that the robot's published digital twin treats as separate parameters,
+derive a closed-form inverse with an explicit feasible set, and
+formulate per-robot calibration as maximum-a-posteriori estimation under
+a population prior with segments chosen by Bayesian D-optimal design.
+On the lab's published 7×7 tables the map matches low-order polynomials
+in leave-one-cell-out error (0.50 cm/s, 0.23 rad/s). On a synthetic
+population the pipeline recovers the injected variability and reduces a
+new robot's error with each added segment; those numbers are not
+measurements. \hw{the campaign on N robots over D days: variance
+decomposition, error against segments, spread under a common command}

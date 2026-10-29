@@ -1,0 +1,73 @@
+\section{Introduction}\label{sec:introduction}
+
+Bristlebots, brushbots and brainbots move by converting the vibration of
+an eccentric-mass motor into directed stick-slip motion of tilted legs.
+They need no wheels, gears or encoders, cost tens of euros, and are
+used by two communities: swarm robotics, where the
+Kilobot \cite{rubenstein2012kilobot, rubenstein2014kilobot} and its
+descendants put a thousand robots on a table, and experimental active
+matter, where self-propelled robots stand in for bacteria, colloids and
+birds under controllable rules
+\cite{giomi2013bristlebots, scholz2018inertial, benzion2023morphological, siebers2023disorder, noirhomme2025brainbots}.
+GRASPion \cite{novkoski2026graspion} is a recent open platform of this
+kind: a 17 g body with two eccentric-rotating-mass motors, a Cortex-M0+
+microcontroller, a magnetometer, an infrared link and a USB-C-charged coin cell,
+programmable from Arduino.
+
+Each motor's
+response to its drive command depends on the motor, its mounting, the
+leg angles, the surface and the battery, so two robots given the same
+command do not move the same way. The Kilobot's designers list manual
+motor calibration among their lessons learned and ask for future
+collectives to calibrate automatically \cite{rubenstein2014kilobot};
+the ARK infrastructure reports automatic calibration as enabled but not
+described \cite{reina2017ark}; even calibrated Kilobots keep
+individual biases, in speed \cite{pinciroli2018kilobots} and in heading
+\cite{raoufi2023individuality}; and the morphological-computation route
+sidesteps per-robot calibration by design \cite{benzion2023morphological}.
+For GRASPion the platform paper reports no characterisation of motion
+against drive level \cite{novkoski2026graspion}, and the lab's digital-twin work calibrated
+a single robot on a 7×7 grid of motor powers with one measurement per
+cell \cite{mammadli2026twin}.
+
+This paper is about calibration alone: no controller, no learned policy.
+We ask
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\item
+  \textbf{Model.} What is the simplest model that predicts a two-motor
+  vibration robot's body twist (forward speed, lateral speed, yaw rate)
+  from its two motor powers and battery voltage, and which of its
+  parameters can the data identify?
+\item
+  \textbf{Variability.} How different are nominally identical robots,
+  how much does one robot drift between days and with battery, and how
+  do both compare with the noise of a single measurement?
+\item
+  \textbf{Transfer.} Given a few fully calibrated robots, how many
+  measurements does a new robot need, which measurements, and how much
+  does the number of calibrated robots matter?
+\end{enumerate}
+
+Our contributions are (i) a grey-box forward map with a per-motor dead
+zone and power law, compared against polynomial, Gaussian-process and
+neural alternatives by grouped cross-validation, with an identifiability
+result: steady-state data determine only the mean of the two
+centre-of-rotation offsets that the lab's twin treats as separate
+parameters; (ii) a closed-form inverse map with an explicit feasible
+polytope, replacing a 66 KB lookup table of which only about 44 \% is
+reachable; (iii) a hierarchical population model of the map whose robot
+/ day / segment variance decomposition the swarm and active-matter
+literature has described qualitatively but, to our knowledge, never
+measured as such for vibration robots; (iv) few-shot
+calibration of a new robot as MAP estimation under the population prior
+with Bayesian D-optimal choice of segments, benchmarked against fitting
+from scratch and against master/slave standardisation; and (v)
+measurements of all of the above on \hw{N} GRASPion robots over
+\hw{D} days. The automated rig (overhead camera, addressed infrared commands,
+automatic re-centring, command watchdog) is infrastructure in the spirit
+of Klingner et al. \cite{klingner2014droplet}, not a contribution.
+Contributions (i)--(iv) rest on derivation, on a reanalysis of the lab's
+published tables and on a simulation; (v) is pending, and every
+statement in this draft that depends on it is marked \hw{\ldots}.

@@ -1,0 +1,59 @@
+\section{Robot, rig and problem
+statement}\label{sec:robot-rig-problem}
+
+\textbf{Robot.} GRASPion \cite{novkoski2026graspion} is a 60 × 30 × 15
+mm, 17 g bristlebot with two cylindrical eccentric-rotating-mass motors
+(Vybronics VZ3TH8B171700L, 2.7 V rated), each driven by a TI DRV2603
+haptic driver in ERM mode from a PWM pin of an ATSAMD21E18A (Cortex-M0+,
+48 MHz, no crystal). The body carries a three-axis magnetometer
+(MLX90393), an ambient-light phototransistor, a 38 kHz infrared receiver
+(TSOP75438) and transmitter, two RGB LEDs, 2 MB of SPI flash and a
+Li-ion coin cell (about 160--200 mAh, more than 90 min of driving). The
+drive command is a signed value per motor on the firmware's scale, whose
+sign selects the motor's direction and whose magnitude we cap at 120
+following the lab, so \(L, R \in [-120, 120]\) with \(|L|, |R|\) the
+powers; the
+upstream firmware drives the motors at 732 Hz PWM, below the DRV2603's
+specified 10 kHz minimum, and a map measured in one PWM mode is not
+expected to hold in another \hw{PWM A/B test on robot \#1: does 40 kHz
+change the map's shape or only its gain}.
+According to the platform paper one motor makes the robot rotate about a
+front leg and both make it go straight; the measured envelope of one
+twin-calibrated robot is 4.7--11.5 cm/s and \(-3.5\) to \(+1.4\) rad/s,
+with a clockwise bias at \(L=R\) \cite{mammadli2026twin}.
+
+\textbf{Rig.} A rigidly mounted overhead camera tracks a 20 mm ArUco marker
+\cite{garrido2014aruco} on each robot against four reference markers at
+marker height, with ChArUco intrinsics and a homography at the marker
+plane. A PC starts each calibration segment with an addressed infrared
+frame (a small protocol with a CRC and per-robot address), the robot
+flashes an LED on receipt, which also measures link latency and
+synchronises the robot's log to the camera clock, drives a constant
+\((L,R)\) for 3 s under a 300 ms command watchdog, and stops; the PC
+re-centres the robot between segments with a bang-bang law that needs no
+map. The robot logs battery voltage under load and the magnetometer at
+rest and under drive in every segment. A hardware watchdog and a
+geofence stop the motors on marker loss or firmware stall. The firmware,
+blaster, tracker, scheduler and analysis pass an offline suite of 125
+tests on a simulated rig \hw{replace with the campaign summary: N
+robots, D days, segments per robot, link loss rate, tracker noise floor,
+re-centring success rate}.
+
+\textbf{Problem statement.} For robot \(r\) on day \(d\), a segment at
+drive \((L,R)\) and battery voltage \(V\) yields a body twist
+\(\mathbf y = (u_1, u_2, \omega)\) (forward speed, lateral speed, yaw
+rate), estimated by least squares on the tracked path
+(§\ref{sec:twist}). All twists in this paper refer to the marker; a
+different reference point changes \(u_2\) and the centre-of-rotation
+offset by the lever arm, which is why the lab's centre-of-mass tables
+are compared with that caveat. We seek a forward map
+\(\mathbf y = F(L,R,V;\boldsymbol\theta_{rd}) + \boldsymbol\epsilon\)
+with a parameter vector \(\boldsymbol\theta_{rd}\) per robot and day, a
+two-level population model
+\(\boldsymbol\theta_{rd} = \boldsymbol\theta_r + \boldsymbol\delta_{rd}\),
+\(\boldsymbol\theta_r \sim \mathcal N(\boldsymbol\mu, \boldsymbol\Sigma)\),
+\(\boldsymbol\delta_{rd} \sim \mathcal N(\mathbf 0, \boldsymbol\Sigma_d)\),
+and a procedure that estimates \(\boldsymbol\theta\) for a new robot
+from as few segments as possible using \((\boldsymbol\mu,
+\boldsymbol\Sigma)\) learned from \(S\) fully calibrated robots out of
+the fleet of \(N\).

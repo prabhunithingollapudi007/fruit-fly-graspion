@@ -114,8 +114,56 @@ Entries were checked on a primary page (arXiv, publisher, DOI). "(abstract only)
 - Kelly, "Fast and easy systematic and stochastic odometry calibration", IROS 2004 (DOI not verified). Joint systematic + diffusion calibration.
 - Martinelli, Tomatis, Siegwart, Autonomous Robots 22, 75 (2007), doi:10.1007/s10514-006-9006-7; Roy & Thrun, ICRA 1999, doi:10.1109/ROBOT.1999.770447. Kalman / incremental ML tracking of drifting kinematic parameters.
 
+**Gap search (2026-10-29, folded into the draft and `paper/refs.bib`):** Pogobot (Loi et al., arXiv:2504.08686: 5 robots × 10 trials per PWM, wheels "most consistent across individuals", vibration units explicitly uncalibrated, no variance numbers); Patterson & Parisi 2023; hierarchical-Bayes system identification on simulated sparse data (Brugnara et al. 2026) and PAC-Bayesian few-shot LTI identification (Huang & Michailidis 2026); battery sample-size analogues (Dechent et al. 2021: 9–13 cells for 1–3-parameter models; Zhou & Howey 2023); RAPTOR; Hammerstein / dead-zone motor identification (Kara & Eker 2004, Zhang et al. 2017, Risuleo et al. 2017); UMBmark track design (Jung & Chung 2011) and automatic Duckiebot calibration (Chaika et al. 2021). Still nothing found: a dead-zone + power-law fit to a vibration motor, a hardware error-vs-samples curve, a peer-reviewed automatic Kilobot motor calibrator, Hexbug across-unit speed statistics.
+
 **Searches that found nothing:** a peer-reviewed automatic Kilobot motor calibrator; speed vs voltage with a dead zone measured on bristle-bots; hierarchical Bayesian calibration of a robot fleet; transfer of a vibration-robot model to other robots with few trials; D-optimal design for mobile-robot odometry or motor maps; a data-budget-vs-accuracy curve for swarm robots.
 
 ## 6. Next step
 
-Not another document. A 60 s static-tracking log and a first `calib_bot` dump from robot #1.
+Not another document. A 60 s static-tracking log and a first `calib_bot` dump from robot #1. When segment tables exist, run the figure-2 and figure-3 analysis of §7 on them instead of on the synthetic population.
+
+## 8. Paper draft
+
+[paper/](paper/) is a LaTeX project (IEEEtran journal layout; `main.tex` inputs `sections/00-abstract.tex` … `10-conclusion.tex`, bibliography `refs.bib` with `IEEEtran.bst`, figures in `figures/`). It was converted once from a Pandoc Markdown draft with pandoc; the `.tex` files are the source from now on. Builds with `pdflatex main; bibtex main; pdflatex main; pdflatex main` (10 pages, no errors or overfull boxes on 2026-10-29, TinyTeX 2026 with `ieeetran` and `courier` installed; the toolchain path is in the agent memory, not on PATH). Draft v0.1 covers: abstract, introduction, a related-work section in six themes from the three searches plus a gap search, robot / rig / problem statement, the method (twist, forward map, CoR identifiability, inverse map, lag and noise, population prior and MAP few-shot fit, D-optimal segments, variance decomposition, baselines), the pre-registered protocol, the simulation study of §7, placeholders marked **[HW]** for every hardware result, discussion, limitations. Bib entries marked `abstract only` or `verify` must be re-read before submission. Revised the same day after the user objected that the abstract, discussion and conclusion stated findings with no hardware behind them: those sections now claim only the derivation, the lab-table reanalysis and that the pipeline works on a synthetic population; every simulation reading is conditional on real robots following the model family; `\hw{…}` slots name what each missing measurement is. An independent proofread (fresh agent, 2026-10-29) then found 24 overclaims, 22 consistency slips, 17 citation issues and 14 prose tics; all factual and wording items were applied (prior size renamed `S` vs fleet `N`, the lab-table reanalysis moved into a "Results without hardware" section, a pgfplots figure of the few-shot curve added, Table 3 completed with N = 6, unverifiable Ellis 2026 citation and the Bull 2022 percentages removed). Left open: condensing §2.2 and §2.5 from catalogues into an argument, reading the abstract-only references, and the author block.
+
+## 7. Pre-hardware work (2026-10-29): the figure-2/3 analysis on a synthetic population
+
+[popsim.py](popsim.py) is the analysis behind figures 2 and 3, run on a simulated population so that it is tested before data exist. Tests: `python calibration_paper/popsim.py selftest` (14 tests, ~6 s, repo `.venv`). Pieces: a synthetic population around `sim.default_truth()` (per-robot dead zones, exponents, motor gains, CW bias; per-day drift; segment noise), a population prior from N fully calibrated robots (shrunk covariance plus a floor that shrinks as 1/√N; N = 1 is the "one reference robot, inflated variance" fallback), a MAP few-shot fit, the baselines `scratch` / `ref` / `ref_gain` (affine standardisation on the reference), `random` and greedy Bayesian D-optimal (`dopt`) segment choice, leave-one-robot-out scoring, nested robot/day/segment variance components, and a power sweep. Results in [results/](results/). **Everything below is synthetic**: the spreads are guesses (spread 1: robot SD ≈ 0.6 cm/s in u₁ and 0.30 rad/s in ω, day SD a quarter of that, segment noise 0.3 cm/s / 0.05 rad/s), the population is drawn from the fitted model family (no misspecification, no battery term, no high-PWM reversal, no lag), noise is constant over the grid, and scores are against the noise-free truth over the whole grid.
+
+**Variance components** (`variance`, 8 robots × 2 days × 5 replicates): recovered within about 3 % of the truth for u₁ and ω at spreads 0.3, 1 and 3; u₂ is at the noise floor in this population, so its robot component is poorly determined. Fractions at spread 1: u₁ 0.76 / 0.04 / 0.19 and ω 0.88 / 0.10 / 0.02 (robot / day / segment).
+
+**Figure-3 curve** (`loro`, 8 robots, 3 random subsets each, 155 s). Score = RMSE over the grid in noise units (1 = 0.5 cm/s, 0.5 cm/s, 0.1 rad/s). Full 405-segment fit: 0.050. Prior mean with no data: ≈ 2.0.
+
+| k | scratch | hier N=1 | hier N=4 | ref_gain N=4 | scratch, dopt | hier N=1, dopt | hier N=4, dopt |
+|---|---|---|---|---|---|---|---|
+| 2 | – | 0.98 | 0.81 | 2.17 | – | 0.91 | 0.69 |
+| 4 | – | 0.67 | 0.56 | 0.96 | – | 0.39 | 0.33 |
+| 8 | 1.01 | 0.45 | 0.35 | 0.84 | 0.40 | 0.31 | 0.24 |
+| 16 | 0.35 | 0.29 | 0.23 | 0.75 | 0.25 | 0.22 | 0.19 |
+| 32 | 0.19 | 0.19 | 0.16 | 0.68 | 0.16 | 0.16 | 0.15 |
+| 64 | 0.12 | 0.14 | 0.12 | 0.67 | 0.12 | 0.12 | 0.11 |
+
+Readings, valid for this synthetic population only:
+- The prior pays below k ≈ 32: at k = 8 it is 2–3× better than fitting from scratch, and from scratch is not even possible below k = 8.
+- D-optimal cells roughly halve the segments needed at small k (hier N=4: 8 designed segments ≈ 16 random ones).
+- Affine standardisation on the reference (`ref_gain`) plateaus at 0.6–0.9: a per-robot gain and offset cannot absorb dead-zone and exponent differences. That is the argument against the master/slave fallback, to be checked on real robots.
+- Prior from 1 vs 4 robots matters at k ≤ 8 (0.45 vs 0.35 random, 0.31 vs 0.24 designed) and little beyond. In this population the N = 1 inflated prior already has the right shape; real robots may differ in ways the model family does not capture, which is exactly what several full grids would reveal.
+- 16 designed segments (≈ 2 min of driving) leave an error of about 10 % of the between-robot spread and below one segment's noise. The "~75 segments in 10 min" budget looks generous here; the real question is whether the model family holds.
+- 95 % intervals of the hier fit cover the true mean twist 0.85–0.95 of the time at k ≥ 4 (the floor heuristics are slightly narrow); 1.0 at k = 0 (prior too wide).
+
+**Power** (`power --sims 8`: 3 spreads × fleets of 4, 6, 8 robots × 8 simulated populations, 2 days × 5 replicates each). "SD ratio" is the estimated between-robot SD of ω over the population's true value (from a 2,000-robot draw), median and 10–90 % band over populations; the figure-3 scores are medians, random design, 1 subset per robot, `scratch` with the quick 4-start fit.
+
+| spread | n | SD ratio [q10, q90] | hier N=1, k=4 / 16 | hier N=n−1, k=4 / 16 | scratch k=16 | full |
+|---|---|---|---|---|---|---|
+| 0.3 | 4 | 0.87 [0.61, 1.09] | 0.58 / 0.26 | 0.53 / 0.22 | 0.48 | 0.06 |
+| 0.3 | 8 | 0.84 [0.66, 1.10] | 0.57 / 0.25 | 0.42 / 0.20 | 0.33 | 0.05 |
+| 1.0 | 4 | 0.91 [0.61, 1.12] | 0.74 / 0.28 | 0.74 / 0.25 | 0.41 | 0.06 |
+| 1.0 | 8 | 0.83 [0.68, 1.18] | 0.66 / 0.27 | 0.55 / 0.24 | 0.34 | 0.05 |
+| 3.0 | 4 | 0.97 [0.58, 1.26] | 1.20 / 0.41 | 1.33 / 0.32 | 0.51 | 0.05 |
+| 3.0 | 8 | 0.81 [0.70, 1.28] | 1.32 / 0.36 | 0.91 / 0.29 | 0.37 | 0.05 |
+
+Readings (synthetic; 8 populations per cell, so the bands themselves are rough):
+- The number of full-grid robots mainly sets how well the *spread* is known: about ±40 % at 4 robots and ±30 % at 8 (the sampling error of a variance from n units, ≈ 1/√(2(n−1)), not measurement noise). Measurement noise is not the limit at 5 replicates.
+- It barely changes how well a *new* robot is calibrated: at k = 16 the few-shot error is 0.20–0.29 at every spread and fleet size; N beyond 2–4 adds little, except at large spread and k ≤ 4.
+- Planning consequence: 5–6 full grids are a defensible phase B; 8–12 buys a tighter spread estimate, not a better figure 3. The real risk that no simulation can show is model misspecification across robots, which only the full grids reveal.
+- The first version of this sweep compared the estimate against the sampled robots' own spread and reported a ratio of 0.98 at every n; that measured ANOVA recovery, not sampling, and was replaced.

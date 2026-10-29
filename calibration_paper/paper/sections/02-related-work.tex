@@ -1,0 +1,256 @@
+\section{Related work}\label{sec:related-work}
+
+\subsection{Physics of vibration-driven
+locomotion}
+
+A bristlebot converts vertical vibration into horizontal motion through
+the asymmetric friction of tilted legs. Cicconofri and DeSimone
+\cite{cicconofri2015motility} derive the mean speed as a function of
+vibration frequency for a model bristle-bot in closed form, including
+the frequency at which the direction of motion reverses, and the
+reversal was demonstrated experimentally on a vibrated substrate
+\cite{cicconofri2016inversion}. Kim et al. \cite{kim2020millibristle}
+model milli-bristle-bots with dry friction and predict separate forward
+and backward frequency bands and resonances, confirmed in experiment.
+Giomi et al. \cite{giomi2013bristlebots} show that a single per-robot
+number, the ratio of spinning to walking, selects the collective state
+of confined bristlebots, which is the clearest argument that per-robot
+calibration matters at the collective level. Scholz et al.
+\cite{scholz2018inertial} measure a lag between orientation and
+velocity in vibrobots and explain it with an underdamped active-Brownian
+model, which motivates fitting a first-order lag rather than assuming an
+instantaneous response. For two-motor platforms, Vartholomeos and
+Papadopoulos \cite{vartholomeos2006microrobot} analysed a planar
+micro-robot driven by two centripetal-force actuators, and Notomista et
+al. \cite{notomista2019brushbot} derived brushbot dynamics from first
+principles, with differential-drive kinematics \(v=(v_L+v_R)/2\),
+\(\omega=(v_R-v_L)/W\) in which each \(v_i\) is nonlinear in motor
+speed; their experiments validate the fully actuated variant only. Two
+consequences for us: a monotone per-motor activation can fail at high
+drive where the reversal or a resonance sits, so the top of the drive
+range must be checked before the model form is fixed; and the
+differential structure is a hypothesis to test.
+
+\subsection{Characterising and calibrating vibration
+robots}
+
+The closest precedent for an automated calibration loop is the Droplet
+platform \cite{klingner2014droplet}, whose stick-slip vibration-motor
+powertrain is calibrated per robot by a Nelder--Mead search over motor
+parameters, with commands sent over infrared and paths tracked by a
+webcam. It searches per robot and, as far as its abstract states, fits
+no model. Swarmodroid
+\cite{dmitriev2023swarmodroid} characterises single-motor bristle-bots
+with ArUco tracking: speed rises monotonically with PWM, the vibration
+frequency rises roughly linearly with PWM, and the dispersion of speed
+grows with PWM, for seven robots of each type; there is no two-motor
+map, inverse or population model. Pogobot \cite{loi2025pogobot}, the
+platform closest to GRASPion in purpose, is characterised with an
+overhead camera on five robots and ten trials per PWM level with equal
+power on both motors, for three locomotion modules: wheels (up to about
+25 cm/s, the ``most consistent dynamics across individuals''),
+uncalibrated vibration legs (up to about 7 cm/s with a stronger turning
+bias) and brushes that mostly spin; its motor calibration is an onboard
+yaw-rate loop that trims the command asymmetry until the robot drives
+straight, applied to the wheeled units only, with the vibration units
+explicitly left uncalibrated; we found no variance numbers in it.
+Patterson and Parisi \cite{patterson2023fundamental} take the distinct
+``free speeds'' of vibration-driven vehicles as a given input to a
+traffic study rather than something to calibrate. For GRASPion's
+predecessor, Noirhomme et al. \cite{noirhomme2025brainbots} give the
+most detailed motion characterisation (centre and long-axis tracking,
+Savitzky--Golay differentiation, instantaneous centre of rotation, a
+spin-versus-walk index swept over motor voltage and leg angle), and for
+GRASPion itself the platform paper reports a single-motor rotation and a
+diffusive mean-squared displacement with no drive dependence
+\cite{novkoski2026graspion}. The digital-twin paper
+\cite{mammadli2026twin} adds a camera-based \((v,\omega)\to(L,R)\)
+calibration at a high level; its public code shows a 7×7 grid of powers
+60--120 on one robot, one value per cell, a cubic / quadratic polynomial
+fit inverted by bounded least squares into two 68×490 lookup tables, and
+separate clockwise and counter-clockwise centre-of-rotation offsets
+(14.5 and 16.1 mm). Our reanalysis of those tables (§\ref{sec:lab-tables}) finds the
+cubic to overfit and only about 44 \% of the lookup table's box to be
+reachable.
+
+The hands-on Kilobot procedure sets left, right and straight motor values per robot and
+stores them in EEPROM \cite{rubenstein2014kilobot}; the lessons-learned
+section calls it tedious and hard to automate. ARK \cite{reina2017ark}
+provides overhead tracking and infrared control for a hundred robots and
+says automatic motor calibration is enabled but does not describe it.
+Pinciroli et al. \cite{pinciroli2018kilobots} measured 120
+pre-calibrated Kilobots in one-minute straight runs, estimated a
+per-robot Gaussian speed bias (SD 1.86 mm/s) and injected it into the
+ARGoS simulator; the population variance was measured, but used only as
+simulator noise. Raoufi et al. \cite{raoufi2023individuality} show a
+persistent per-robot heading bias whose within-robot spread is smaller
+than the ensemble's, and that calibration is ``only temporary''. the Kilombo
+simulator \cite{jansson2015kilombo} motivates itself partly by the need
+for frequent recalibration; the Robotarium automates registration and sensor calibration of a remote
+wheeled swarm with an overhead tracker \cite{pickem2016robotarium}.
+Siemensma and Haghighat \cite{siemensma2024bayesian} model per-robot
+misalignment and speed factors of five wheeled robots as hand-tuned
+distributions for a simulator. In experimental active matter, per-unit
+identification is routine: Siebers et al. \cite{siebers2023disorder}
+fit twenty light-driven circle walkers individually as active Brownian
+particles and exploit their disorder, and find a hard light-intensity
+threshold below which the walkers do not move, a dead zone in our
+language; Kiechl et al. \cite{kiechl2026chiral} show that a chiral
+Hexbug matches the active-Brownian circle-swimmer predictions for the
+mean-squared displacement and intermediate scattering function; Bailey
+et al. \cite{bailey2022logit} show that ordinary least squares on the
+mean-squared displacement is biased and recommend a log-MSD fit with
+bootstrap intervals. What is missing across all of this is a measured map from
+the two motor powers and the battery voltage to the body twist for any
+two-motor vibration robot, a quantitative robot / day / segment
+decomposition of its variability, and any use of a population of
+calibrated robots to calibrate the next one.
+
+\subsection{Kinematic calibration and identifiability of mobile
+robots}
+
+Calibrating a motion model from external pose measurements is a mature
+problem for wheeled robots. Antonelli et al.
+\cite{antonelli2005odometry} fit differential-drive parameters by
+linear least squares from camera measurements on arbitrary paths; Censi
+et al. \cite{censi2013calibration} give a closed-form
+maximum-likelihood calibration of odometry and sensor parameters with an
+observability analysis and show accuracy near the Cramér--Rao bound;
+Kelly \cite{kelly2004odometry} calibrates systematic and stochastic
+(diffusion) odometry parameters jointly from path integrals; and
+Seegmiller et al. \cite{seegmiller2013ipem} fit the integrated model to
+low-rate pose data by minimising multi-step prediction error, including
+a first-order powertrain lag and delay, which is both an alternative to
+fitting lag from step responses and the natural validation metric for a
+motion model. Slip-dominated vehicles are modelled by instantaneous
+centres of rotation that stay in a bounded region: Martínez et al.
+\cite{martinez2005icr} fit constant ICR positions for tracked robots,
+Mandow et al. \cite{mandow2007skidsteer} extend this to wheeled
+skid-steer platforms on several surfaces, and Yi et al.
+\cite{yi2009skidsteer} estimate ICR locations online with an extended
+Kalman filter; the ICR positions are fitted as constants from
+steady-state runs, and the degeneracy we meet in
+§\ref{sec:identifiability} is of a different kind, between two offsets
+that enter only through the sign of the yaw rate. Online self-calibration tracks parameters that drift: Roy and
+Thrun \cite{roy1999selfcalibration} with incremental maximum likelihood
+and Martinelli et al. \cite{martinelli2007selfcalibration} with an
+augmented Kalman filter for the systematic part and a second filter for
+the noise part. Becker et al. \cite{becker2014massive} steer many
+differently calibrated robots with one broadcast command plus online
+gain estimation. Our forward map is in the Antonelli--Martínez family,
+with motor commands in place of wheel encoders and a nonlinear per-motor
+activation in front of the linear twist. That activation is a
+Hammerstein structure, a static nonlinearity followed by a linear block,
+for which dead-zone models of DC motors are standard
+\cite{kara2004dcmotor, zhang2017deadzone} and for which Bayesian
+identification by empirical Bayes exists in nonparametric form
+\cite{risuleo2017hammerstein}; we found no published fit of a dead zone
+plus power law to a vibration motor's speed against PWM, so the form
+itself is a hypothesis that the grid tests.
+
+\subsection{Choosing the calibration
+experiments}
+
+Bayesian experimental design chooses measurements to maximise expected
+information \cite{chaloner1995design, rainforth2024design}. For robot
+calibration, Sun and Hollerbach \cite{sun2008observability} relate the
+observability indices used in kinematic calibration to the alphabetic
+optimality criteria and show that D-optimality minimises parameter
+variance while E-type criteria minimise end-effector position
+uncertainty. Active
+learning of dynamics models chooses where to sample under the
+constraints the dynamics impose \cite{buissonfenet2020active}, and
+receding-horizon curiosity \cite{schultheis2019curiosity} frames
+exploration as sequential Bayesian design alternating with nonlinear
+system identification. Preiss et al. \cite{preiss2017selfcalibration}
+add an observability cost to trajectory optimisation for visual-inertial
+self-calibration, and Das et al. \cite{das2024boed} apply Bayesian
+optimisation to the choice of calibration poses for a manipulator. For
+wheeled odometry the choice of calibration path has been studied without
+a Bayesian framing, for instance the size of the UMBmark square under
+non-systematic errors \cite{jung2011tracks}, and fully automatic
+wheel-and-camera calibration of Duckiebots from fiducials reaches the
+accuracy of manual calibration \cite{chaika2021duckiebot}. Beyond such track-design studies we found, in a
+non-systematic search, no Bayesian or alphabetic-optimal design of a
+mobile robot's motor-map or odometry calibration, and no published curve
+of calibration error against the number of calibration samples for
+cheap or swarm robots on hardware.
+
+\subsection{Learned dynamics and few-shot
+adaptation}
+
+Nagabandi et al. \cite{nagabandi2018millirobot} learn a neural forward
+model of a legged millirobot without odometry from under seventeen
+minutes of random commands tracked externally and use it for
+model-predictive control; it is the closest published experiment to ours
+in platform and data budget and the natural neural comparison for our
+grey-box map. Meta-learning adapts a dynamics model from a few recent
+steps: across terrains and damage on a millirobot
+\cite{nagabandi2019adapt}, across suspended payloads on a quadrotor
+\cite{belkhale2021payload}, and across randomised simulated parameters
+for legged robots that then adapt on hardware in a fraction of a second
+without real calibration data \cite{kumar2021rma}. Neural-Fly
+\cite{oconnell2022neuralfly} learns a shared basis from twelve minutes
+of flight on one drone and adapts only the linear coefficients that mix
+it, and the basis transferred to a different drone with a modest loss;
+ALPaCA \cite{harrison2018alpaca} meta-learns features and a Gaussian
+prior on last-layer weights with closed-form online Bayesian updates;
+PACOH \cite{rothfuss2021pacoh} shows that learned priors overfit when
+few meta-training tasks are available, which is the regime of a small
+robot fleet. Meta-learned state-space models
+\cite{chakrabarty2023meta}, in-context identification over a class of
+systems \cite{forgione2023incontext} and universal car dynamics models
+\cite{xiao2024anycar} all learn the across-unit distribution from many
+systems, simulated or real. Xiao et al. \cite{xiao2021ikd} learn the
+inverse map directly from driving data, and RAPTOR
+\cite{eschmann2025raptor} distils a single recurrent policy from a
+thousand simulated quadrotors that adapts in context on ten real ones,
+handling fleet heterogeneity implicitly rather than through per-robot
+parameters. Our model has the Neural-Fly / ALPaCA structure, a physical
+basis with per-unit coefficients, except that the two dead-zone and
+exponent parameters per motor are per-unit and nonlinear too; with
+thirteen interpretable parameters a hierarchical Gaussian prior replaces
+the neural network.
+
+\subsection{Transfer across nominally identical
+units}\label{sec:rw-transfer}
+
+Population-based structural health monitoring treats a fleet of
+nominally identical structures as a population whose shared behaviour is
+a ``form'' and whose between-member variation is the population variance
+\cite{bull2021pbshm}; hierarchical Bayesian multitask models over a
+truck fleet and a wind farm let data-poor groups borrow strength from
+data-rich ones and tighten interpretable parameters
+\cite{bull2022fleet}, and the same machinery applies to a small
+population of nominally identical blades \cite{dardeno2024frf}. In
+system identification, hierarchical Bayesian models draw each dataset's
+ODE parameters from a shared population distribution and, on simulated
+sparse data, halve the trajectory error of unpooled fits
+\cite{brugnara2026hierarchical}; PAC-Bayesian meta-learning learns a
+prior over linear system matrices from training systems and studies its
+sensitivity to their number \cite{huang2026pacbayes}. The closest
+quantitative answer to ``how many units does a population prior need''
+comes from battery research: Dechent et al.
+\cite{dechent2021samplesize} estimate that one-, two- and
+three-parameter ageing models need at least 9, 11 and 13 cells to
+resolve cell-to-cell variability, and Zhou and Howey
+\cite{zhou2023battery} separate cell-level manufacturing variability
+from population-level cycling conditions in a hierarchical lifetime
+model. In robotics, Williams et al. \cite{williams2008mtgp} learn
+inverse dynamics as a multi-task Gaussian process whose task similarity
+comes from inertial parameters and beat both independent and pooled
+models; Bocsi et al. \cite{bocsi2013alignment} align data across robot
+architectures. Helwa and Schoellig \cite{helwa2017transfer} transfer
+six minutes of source-drone data to a target drone through a dynamic
+(not static) map identified from simple experiments, and Sorocky et al.
+\cite{sorocky2020selection} show with several candidate source robots
+that the choice of source changes target error by 62 \% and that a
+poorly matched source gives negative transfer, the clearest evidence we
+found against relying on a single reference robot. In analytical chemistry the
+same problem is called calibration transfer or instrument
+standardisation
+\cite{wang1991standardization, feudale2002transfer, workman2018transfer}:
+a master instrument's calibration is transferred to a slave through a
+small set of transfer samples measured on both, and this master/slave
+form is the baseline we call \texttt{ref\_gain} in
+§\ref{sec:baselines}.
