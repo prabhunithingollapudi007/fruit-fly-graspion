@@ -218,9 +218,9 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 ### 5.2 Protocol (UNTESTED design)
 
-**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (134 tests; 133 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
+**Implementation:** [calibration/README.md](calibration/README.md) implements the core of this protocol: calibration firmware, a bot as the IR blaster, tracker, a scheduler with an operator pause instead of automatic re-centring, and the twist, forward-map and inverse-map fits of §5.3. On 2026-10-30 it was cut back to what the first table needs: the step / PRBS segments and lag fit (step 5 below), the circles and heading-diffusion model (step 6), the bot's battery / magnetometer log and the fleet analysis are design here, not code (git history, commit 6dde690). It passes its offline suite on a simulated rig (99 tests; one is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its README; the steps below are the design it follows.
 
-**Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the PC re-centres the bot between segments. The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
+**Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the bot is re-centred between segments (by the operator since 2026-10-30; the automatic bang-bang re-centring was removed until a rig exists to tune it). The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
 
 0. **Rig.**
    - Deployment surface; arena ≥ 1 m with foam walls.

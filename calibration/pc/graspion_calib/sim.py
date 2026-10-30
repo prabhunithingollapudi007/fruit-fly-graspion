@@ -2,7 +2,7 @@
 
 Pieces, each mirroring the real one closely enough to exercise the pipeline end to end:
   SimFirmware  frame handling of firmware/calib_bot/calib_bot.ino (CRC, address filter, ops, command watchdog,
-               low-battery latch, sync flash, log records with a drifting bot clock)
+               sync flash)
   SimPlant     EllipticalBot2D kinematics (tilemat_control_stack Ellipse2dObj.py: rotation about a CoR offset
                laterally from the CoM by d_cw / d_ccw, plus translation along the heading), driven by a
                dead-zone power-law truth map with dead time, first-order lag and heading diffusion
@@ -56,47 +56,27 @@ class SimParams:
     ir_loss: float = 0.02
     decode_delay: float = RECORD_GAP_S + 0.0005   # frame end -> handleFrame: IRremote's end-of-frame silence + loop()
     usb_latency: float = 0.002
-    v_bat0: float = 4.05
-    v_drain: float = 2.5e-4                  # V per second at full drive on both motors
-    v_sag: float = 0.12                      # V under full load
-    clock_err: float = 0.012                 # bot millis() runs 1.2 % fast
     watchdog_s: float = 0.3
     drive_max: int = 120
     led_base: tuple = (30.0, 25.0)           # (blue, red) background at the LED spot
     led_flash: float = 120.0
     flash_s: float = 0.07
-    mvbat_abort: float = 3.4
 
 
 class SimFirmware:
-    """Frame semantics of calib_bot.ino. Times in host seconds; the log uses the drifting bot clock (ms).
+    """Frame semantics of calib_bot.ino. Times in host seconds.
 
     Only frames that command the drive (STOP, SEG, DRIVE inside a segment, RECENTRE) feed the command watchdog;
-    a DRIVE without an open segment stops the motors. The firmware's SysTick deadman and hardware watchdog only
-    act when loop() stalls, which the simulated firmware never does, so they are not modelled.
-
-    i2c_ok = False mirrors an I2C bus that stayed held LOW (firmware `i2cOk`; the firmware retries the recovery
-    about once per second, which is not modelled): no battery reads, so no low-battery latch, and every SEG is
-    answered with a red flash and no segment or log record.
+    a DRIVE without an open segment stops the motors; PING only flashes.
     """
 
     def __init__(self, bot_id, p: SimParams, plant):
         self.id, self.p, self.plant = bot_id, p, plant
         self.L = self.R = 0
         self.seg_active = False
-        self.rec = None
-        self.log = []
         self.last_frame = -1e9
-        self.i2c_ok = True
-        self.lowbat = False
-        self.low_count = 0
         self.flash_until = -1.0
-        self.flash_red = False
-        self.stats = {"rx_ok": 0, "crc_err": 0, "other_addr": 0, "wd_trips": 0, "drive_no_seg": 0}
-        self._next_pwr = 0.0
-
-    def bot_ms(self, t):
-        return int(t * 1000 * (1 + self.p.clock_err)) + 12345
+        self.stats = {"frames_ok": 0, "crc_err": 0, "other_addr": 0, "drive_no_seg": 0, "wd_trips": 0}
 
     def _set(self, L, R, t):
         L = max(-self.p.drive_max, min(self.p.drive_max, L))
@@ -104,15 +84,8 @@ class SimFirmware:
         self.L, self.R = L, R
         self.plant.command(t + self.p.dead, L, R)
 
-    def _close(self, reason, t):
-        self.seg_active = False
-        if self.rec is not None:
-            self.rec["t_end_ms"] = self.bot_ms(t)
-            self.rec["end_reason"] = reason
-            self.rec = None
-
-    def _flash(self, t, red=False):
-        self.flash_until, self.flash_red = t + self.p.flash_s, red
+    def _flash(self, t):
+        self.flash_until = t + self.p.flash_s
 
     def on_frame(self, raw, t):
         if P.check(raw) != P.OK:
@@ -121,34 +94,21 @@ class SimFirmware:
         f = P.unpack(raw)
         if f.bot_id == P.ADDR_BROADCAST:
             if f.op == P.OP_STOP:
-                self._close(3, t)
+                self.seg_active = False
                 self._set(0, 0, t)
             return
         if f.bot_id != self.id:
             self.stats["other_addr"] += 1
             return
-        self.stats["rx_ok"] += 1
-        if self.lowbat:
-            self._set(0, 0, t)
-            if f.op not in (P.OP_STOP, P.OP_DRIVE):
-                self._flash(t, red=True)
-            return
+        self.stats["frames_ok"] += 1
         if f.op == P.OP_STOP:
             self.last_frame = t
-            self._close(3, t)
+            self.seg_active = False
             self._set(0, 0, t)
         elif f.op == P.OP_SEG:
             self.last_frame = t
-            self._close(1, t)
-            if not self.i2c_ok:                  # no low-battery abort possible: never a segment, red flash
-                self._set(0, 0, t)
-                self._flash(t, red=True)
-                return
             self._set(f.L, f.R, t)
             self.seg_active = True
-            self.rec = {"kind": 1, "t_start_ms": self.bot_ms(t), "t_end_ms": self.bot_ms(t), "L": self.L, "R": self.R,
-                        "end_reason": 0, "n_frames": 1, "mv_rest": int(1000 * self.plant.battery(loaded=False))}
-            self.log.append(self.rec)
             self._flash(t)
         elif f.op == P.OP_DRIVE:
             if not self.seg_active:              # SEG missed or segment ended: stop, never unlogged motion
@@ -156,66 +116,23 @@ class SimFirmware:
                 self._set(0, 0, t)
                 return
             self.last_frame = t
-            if self.rec is not None:
-                self.rec["n_frames"] += 1
             self._set(f.L, f.R, t)
         elif f.op == P.OP_RECENTRE:
             self.last_frame = t
-            self._close(2, t)
+            self.seg_active = False
             self._set(f.L, f.R, t)
-        elif f.op == P.OP_PING:                  # no watchdog feed; a run of PINGs shares one record
-            last = self.log[-1] if self.log else None
-            if self.rec is not None:
-                self.rec["n_frames"] += 1
-            elif last is not None and last["kind"] == 2 and last["n_frames"] < 0xFFFF:
-                last["n_frames"] += 1
-                last["t_end_ms"] = self.bot_ms(t)
-            else:
-                self.log.append({"kind": 2, "t_start_ms": self.bot_ms(t), "t_end_ms": self.bot_ms(t), "L": self.L,
-                                 "R": self.R, "end_reason": 6, "n_frames": 1,
-                                 "mv_rest": int(1000 * self.plant.battery(loaded=False))})
+        elif f.op == P.OP_PING:                  # no watchdog feed
             self._flash(t)
 
     def tick(self, t):
-        moving = self.L != 0 or self.R != 0
-        if moving and t - self.last_frame > self.p.watchdog_s:
-            self._close(4, t)
+        if (self.L != 0 or self.R != 0) and t - self.last_frame > self.p.watchdog_s:
+            self.seg_active = False
             self._set(0, 0, t)
             self.stats["wd_trips"] += 1
-        if t >= self._next_pwr and self.i2c_ok:
-            self._next_pwr = t + (0.2 if moving else 1.0)
-            v = self.plant.battery(loaded=moving)
-            if v < self.p.mvbat_abort:
-                self.low_count += 1
-                if self.low_count >= 3 and not self.lowbat:
-                    self._close(5, t)
-                    self._set(0, 0, t)
-                    self.lowbat = True
-                    self._flash(t, red=True)
-            else:
-                self.low_count = 0
 
     def led(self, t):
-        on = t < self.flash_until
-        return (on and not self.flash_red), (on and self.flash_red)
-
-    DUMP_COLUMNS = ("kind,t_start_ms,t_end_ms,L,R,end_reason,n_frames,n_changes,flags,mv_rest,mv_load_min,"
-                    "mv_load_mean,n_mag,mag_rest_x,mag_rest_y,mag_rest_z,mag_load_x,mag_load_y,mag_load_z")
-
-    def dump_text(self):
-        """The log in calib_bot's USB dump format ('d'), so botlog.py can be tested without a bot."""
-        lines = [f"# I fw=sim proto={P.PROTO_VERSION} id={self.id} id_override=0 serial=SIM pwm_hz=sim "
-                 f"drive_max={self.p.drive_max} watchdog_ms={round(self.p.watchdog_s * 1000)} "
-                 f"mvbat_abort={round(self.p.mvbat_abort * 1000)} i2c={int(self.i2c_ok)} lowbat={int(self.lowbat)} "
-                 f"nrec={len(self.log)}",
-                 "# S " + " ".join(f"{k}={v}" for k, v in self.stats.items()), self.DUMP_COLUMNS]
-        for r in self.log:
-            mv = r.get("mv_rest", 0)
-            lines.append(",".join(str(v) for v in (
-                r["kind"], r["t_start_ms"], r["t_end_ms"], r["L"], r["R"], r["end_reason"], r["n_frames"], 0, 0, mv,
-                mv - 120, mv - 100, 0, 32767, 32767, 32767, 32767, 32767, 32767)))
-        lines.append(f"# end n={len(self.log)}")
-        return "\n".join(lines)
+        """True while the blue sync flash is on."""
+        return t < self.flash_until
 
 
 class SimPlant:
@@ -229,7 +146,6 @@ class SimPlant:
         self.pending = []                    # heap of (t_effect, seq, L, R)
         self._seq = 0
         self.rng = rng or np.random.default_rng(0)
-        self.energy = 0.0
         self.load = 0.0
         fL, fR = p.truth.activations(p.drive_max, p.drive_max)
         self._fmax = float(fL + fR)
@@ -239,9 +155,6 @@ class SimPlant:
     def command(self, t_eff, L, R):
         self._seq += 1
         heapq.heappush(self.pending, (t_eff, self._seq, L, R))
-
-    def battery(self, loaded):
-        return self.p.v_bat0 - self.p.v_drain * self.energy - (self.p.v_sag * self.load if loaded else 0.0)
 
     def truth_twist_com(self, L, R):
         v, u2, w = self.p.truth.predict(L, R)[0]
@@ -258,7 +171,6 @@ class SimPlant:
         self.v += (self.target[0] - self.v) * a
         self.u2 += (self.target[1] - self.u2) * a
         self.w += (self.target[2] - self.w) * a
-        self.energy += self.load * dt
         c, s = math.cos(self.th), math.sin(self.th)
         if self.w > 0:                       # EllipticalBot2D.get_CoR / move_bot
             cx, cy = self.x - self.p.d_cor[1] * s, self.y + self.p.d_cor[1] * c
@@ -341,13 +253,13 @@ class SimWorld:
                 if g.marker_id in self.occluded or self.rng.random() < p.p_drop:
                     continue
                 mx, my, mth = g.marker_from_body(plant.x, plant.y, plant.th)
-                blue, red = self.fw[bid].led(te)
+                blue = self.fw[bid].led(te)
                 dets.append(Detection(
                     frame=self._frame, t=te + self.cam_latency, id=g.marker_id,
                     x=float(mx) + self.rng.normal(0, p.pos_noise), y=float(my) + self.rng.normal(0, p.pos_noise),
                     theta=float(wrap(float(mth) + self.rng.normal(0, p.th_noise))),
                     led_b=p.led_base[0] + (p.led_flash if blue else 0.0) + self.rng.normal(0, 3.0),
-                    led_r=p.led_base[1] + (p.led_flash if red else 0.0) + self.rng.normal(0, 3.0),
+                    led_r=p.led_base[1] + self.rng.normal(0, 3.0),
                     side_m=0.02, n_ref=4))
             self._pending_frames.append((te + self.cam_latency, self._frame, dets))
             self._frame += 1

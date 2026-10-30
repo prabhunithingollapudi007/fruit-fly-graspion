@@ -261,36 +261,25 @@ class SegmentData:
     lag: float
     t_cmd: float                  # SEG effect time on the camera clock
     t_end: float                  # STOP effect time on the camera clock
-    levels: list                  # [(t_effect, L, R, later), ...] incl. the final (t_end, 0, 0, later); see
-                                  # _segment_levels for `later`
+    levels: list                  # [(t_effect, L, R), ...] incl. the final (t_end, 0, 0)
     t: np.ndarray = field(repr=False, default=None)
     x: np.ndarray = field(repr=False, default=None)
     y: np.ndarray = field(repr=False, default=None)
     th: np.ndarray = field(repr=False, default=None)
     extra: dict = field(default_factory=dict)
-    t_trip: float | None = None   # bot log: its watchdog / low-battery latch ended the segment here (camera clock)
-    bot_end: str | None = None    # bot log end reason, if the log was merged
     stop: float | None = None     # visible early stop found by steady_window (camera clock)
 
 
-MAX_LATER = 2       # repeats kept per command: two lost keep-alives in a row already trip the bot's watchdog
-
-
-def _segment_levels(fr, seg, bot, offset, t_end_eff, stop_acks=()):
-    """[(t_effect, L, R, later), ...] from the SEG and DRIVE frames, ending with (t_end_eff, 0, 0, later).
-
-    `later`: effect times of the next frames that repeat the same command (the DRIVE keep-alives after a level
-    change; stop_acks, the acknowledgements of the STOP repeats). A change the bot missed (IR loss) takes effect
-    at one of them, which dynamics.fit_lag tries. The SEG has none: a segment whose SEG was lost never started."""
+def _segment_levels(fr, seg, bot, offset, t_end_eff):
+    """[(t_effect, L, R), ...] from the SEG and DRIVE frames (one entry per level change), ending with
+    (t_end_eff, 0, 0)."""
     sel = (fr["seg"] == seg) & (fr["bot"] == bot) & np.isin(fr["op"], ["SEG", "DRIVE"])
     out = []
     for t, L, R in zip(fr["t_ack"][sel], fr["L"][sel], fr["R"][sel]):
-        if not out or (int(L), int(R)) != tuple(out[-1][1:3]):
-            out.append([float(t) + offset, int(L), int(R), []])
-        elif len(out) > 1 and len(out[-1][3]) < MAX_LATER:
-            out[-1][3].append(float(t) + offset)
-    out.append([t_end_eff, 0, 0, [float(t) + offset for t in stop_acks][:MAX_LATER]])
-    return [(t, L, R, tuple(later)) for t, L, R, later in out]
+        if not out or (int(L), int(R)) != out[-1][1:]:
+            out.append((float(t) + offset, int(L), int(R)))
+    out.append((t_end_eff, 0, 0))
+    return out
 
 
 def extract_segments(sess: Session, pad_before=0.5, pad_after=1.0, rise=40.0, off=None, fallback_offset=None):
@@ -330,18 +319,14 @@ def extract_segments(sess: Session, pad_before=0.5, pad_after=1.0, rise=40.0, of
         levels = []
         if kind != "static":
             sel = (fr["t_ack"] >= t_ack - 1e-6) & (fr["t_ack"] <= t_end_ack + 1e-6)
-            stops = ((fr["op"] == "STOP") & (fr["seg"] == seg) & (fr["bot"] == sess.bot_id)
-                     & (fr["t_ack"] > t_end_ack + 1e-6) & (fr["t_ack"] < (motion[j] if j < len(motion) else np.inf)))
-            levels = _segment_levels({k2: v[sel] for k2, v in fr.items()}, seg, sess.bot_id, lag, t_end,
-                                     np.sort(fr["t_ack"][stops]))
+            levels = _segment_levels({k2: v[sel] for k2, v in fr.items()}, seg, sess.bot_id, lag, t_end)
         out.append(SegmentData(seg, int(S["attempt"][k]), kind, str(S["tag"][k]), int(S["block"][k]),
                                int(S["L"][k]), int(S["R"][k]), str(S["status"][k]), flash,
                                lag, t_cmd, t_end, levels, tr["t"][m], bx[m], by[m], bth[m]))
     return out, off
 
 
-def detect_early_stop(sd: SegmentData, t_from, t_to, lever=0.02, frac=0.25, min_still_s=0.3, ref_s=0.2,
-                      expected=None):
+def detect_early_stop(sd: SegmentData, t_from, t_to, lever=0.02, frac=0.25, min_still_s=0.3, ref_s=0.2):
     """If the bot stopped inside the window (e.g. its command watchdog tripped after lost frames), return the
     time it stopped; else None. 'Speed' = sqrt(u1^2 + u2^2 + (lever omega)^2) from a smoothed derivative.
 
@@ -349,13 +334,8 @@ def detect_early_stop(sd: SegmentData, t_from, t_to, lever=0.02, frac=0.25, min_
     (the median over the first half of the window missed most stops in that half). A stop needs evidence:
     still samples spanning more than min_still_s after the last moving one. The velocity series skips runs
     between dropped frames that are shorter than the filter, so a tail lost that way is not a stop. On 20
-    simulated grid + step session pairs (3641 segments, 34 watchdog trips more than 0.45 s before the STOP,
-    bot log hidden) this sees 31 trips with no false stop; the old rule saw 23, with 14 false stops.
-
-    expected: for a segment with several commanded levels, the speed each level should give, as a function of
-    time (level_speed). Only levels expected to move the bot at 2 frac or more of the fastest level's speed are
-    judged, and only their time counts as still: below that, a bot that obeys a slow (or dead-zone) level could
-    look stopped. So a step down to a slow level is not a stop, and a trip during a fast level still is."""
+    simulated grid sessions (34 watchdog trips more than 0.45 s before the STOP) this saw 31 trips with no false
+    stop."""
     m = (sd.t >= t_from) & (sd.t <= t_to)
     if m.sum() < 15:
         return None
@@ -368,88 +348,35 @@ def detect_early_stop(sd: SegmentData, t_from, t_to, lever=0.02, frac=0.25, min_
     ref = np.max(np.median(sliding_window_view(sp, k), axis=1)) if len(sp) > k else np.median(sp)
     if ref < 1e-3:
         return None
-    judged = np.ones(len(sp), bool)
-    if expected is not None:
-        e = np.asarray(expected(tv), float)
-        if not e.max() > 0:
-            return None
-        judged = e >= 2 * frac * e.max()
-    last = np.flatnonzero((sp > frac * ref) & judged)
+    last = np.flatnonzero(sp > frac * ref)
     if not len(last):
         return None
     t_last = tv[last[-1]]
-    if expected is not None:                                   # judged samples after it are all still
-        still_s = np.count_nonzero(judged[last[-1] + 1:]) * dt
-        return float(t_last) if still_s > min_still_s else None
     still = tv[last[-1] + 1:]                                  # all below frac * ref
     return float(t_last) if len(still) and (still[-1] - t_last) > min_still_s else None
 
 
 USABLE = ("ok", "geofence", "marker_loss")   # the last two end early at the PC-side STOP; "missed" never moved
-BOT_ABANDONED = ("watchdog", "lowbat")         # bot log end reasons: the bot stopped before the PC's STOP
 
 
 def steady_window(sd: SegmentData, settle_s=0.5, margin_s=0.1):
     """(t0, t1, truncated): the part of a segment where the commanded drive was still acting, on the camera clock.
 
-    From t_cmd + settle_s to the STOP, cut short when the bot's log says its command watchdog or low-battery
-    latch ended the segment (t_trip), or when the bot visibly stopped (detect_early_stop; then t1 = stop -
-    margin_s). The PC logs such a segment as 'ok', so every steady-state fit (twist, heading diffusion) must use
-    this window, and the lag fit must skip the segment. The visible stop is stored in sd.stop."""
+    From t_cmd + settle_s to the STOP, cut short when the bot visibly stopped (detect_early_stop, e.g. its
+    command watchdog tripped after lost frames; then t1 = stop - margin_s). The PC logs such a segment as 'ok',
+    so the twist fit must use this window. The visible stop is stored in sd.stop."""
     t0, t1 = sd.t_cmd + settle_s, sd.t_end
-    if sd.t_trip is not None and np.isfinite(sd.t_trip):
-        t1 = min(t1, sd.t_trip)
     sd.stop = detect_early_stop(sd, t0, t1)
     if sd.stop is not None:
         t1 = min(t1, sd.stop - margin_s)
     return t0, t1, bool(t1 < sd.t_end)
 
 
-def level_speed(levels, fwd, v_bat=None, lever=0.02):
-    """Speed sqrt(u1^2 + u2^2 + (lever omega)^2) that forward map fwd predicts for the commanded level acting at
-    each time (levels: SegmentData.levels; a 'bat' map at v_bat, default its median training voltage), as a
-    function of a time array, for detect_early_stop(expected=...). 0 before the first level."""
-    lv = sorted(levels, key=lambda x: x[0])
-    ts = np.array([x[0] for x in lv], float)
-    L = np.array([x[1] for x in lv], float)
-    R = np.array([x[2] for x in lv], float)
-    V = None
-    if getattr(fwd, "features", None) == "bat":
-        V = np.full(len(L), float(fwd.meta.get("v_bat_median", fwd.v_ref) if v_bat is None else v_bat))
-    Y = np.asarray(fwd.predict(L, R, V), float)
-    speed = np.sqrt(Y[:, 0] ** 2 + Y[:, 1] ** 2 + (lever * Y[:, 2]) ** 2)
-
-    def at(t):
-        k = np.searchsorted(ts, np.asarray(t, float), side="right") - 1
-        return np.where(k >= 0, speed[np.maximum(k, 0)], 0.0)
-    return at
-
-
-def abandoned(sd: SegmentData, settle_s=0.5, fwd=None, v_bat=None):
-    """True if the bot stopped before the PC's STOP, i.e. unusable for the lag fit: its log says its command
-    watchdog or low-battery latch ended the segment, or it visibly stopped (stored in sd.stop).
-
-    Against the segment's peak speed, a step down to a slow or dead-zone level (steps, PRBS) looks like a stop.
-    So with several commanded levels the visible-stop test judges only the levels that forward map fwd expects
-    to move the bot at half the fastest level's speed or more (detect_early_stop(expected=level_speed(...));
-    a 'bat' map at v_bat). Without fwd only the bot log counts there."""
-    if sd.bot_end in BOT_ABANDONED:
-        return True
-    if len(sd.levels) <= 2:
-        steady_window(sd, settle_s)
-    elif fwd is not None:
-        sd.stop = detect_early_stop(sd, sd.t_cmd + settle_s, sd.t_end,
-                                    expected=level_speed(sd.levels, fwd, v_bat))
-    else:
-        sd.stop = None
-    return sd.stop is not None
-
-
 def fit_segment_twists(segs, settle_s=0.5, min_duration_s=1.0, kinds=("drive",), statuses=USABLE):
-    """Constant-twist fit for every single-level segment. Returns a list of row dicts."""
+    """Constant-twist fit for every drive segment with a usable status. Returns a list of row dicts."""
     rows = []
     for sd in segs:
-        if sd.kind not in kinds or len(sd.levels) > 2 or sd.status not in statuses:
+        if sd.kind not in kinds or sd.status not in statuses:
             continue
         t0, t1, truncated = steady_window(sd, settle_s)
         m = (sd.t >= t0) & (sd.t <= t1)

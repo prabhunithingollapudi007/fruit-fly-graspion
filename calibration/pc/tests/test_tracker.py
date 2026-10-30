@@ -238,18 +238,5 @@ class TestTracker(unittest.TestCase):
         self.assertAlmostEqual(math.atan2(e01[1], e01[0]), th - math.pi / 2, delta=1e-12)
 
 
-class TestIntrinsics(unittest.TestCase):
-    def test_synthetic_charuco(self):
-        from graspion_calib import intrinsics
-        board = intrinsics.make_board()
-        K = np.array([[950.0, 0, 640], [0, 950.0, 360], [0, 0, 1]])
-        views = intrinsics.synthetic_views(board, K, n=12)
-        res = intrinsics.calibrate(board, views)
-        self.assertGreaterEqual(res["views"], 8)
-        self.assertLess(res["rms_px"], 1.0)
-        self.assertAlmostEqual(res["K"][0, 0] / 950.0, 1.0, delta=0.03)
-        self.assertAlmostEqual(res["K"][1, 1] / 950.0, 1.0, delta=0.03)
-
-
 if __name__ == "__main__":
     unittest.main()

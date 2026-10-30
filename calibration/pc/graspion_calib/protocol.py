@@ -204,7 +204,7 @@ def vectors_header() -> str:
     return "\n".join(lines) + "\n"
 
 
-SKETCH_DIRS = ("firmware/calib_bot", "blaster/ir_blaster")
+SKETCH_DIRS = ("firmware/calib_bot",)
 
 
 def calibration_root() -> Path:
