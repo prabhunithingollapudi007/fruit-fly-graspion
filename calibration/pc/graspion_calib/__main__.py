@@ -1,14 +1,13 @@
 """graspion_calib command line. Run from calibration/pc:  python -m graspion_calib <command> --help
 
-  register        read a USB-connected bot's ID / serial / PWM mode ('i') into bots/<id>.json (refuses a bot
+  register        read a USB-connected bot's ID / serial / watchdog ('i') into bots/<id>.json (refuses a bot
                   built with another IR protocol version)
-  dump            download a bot's log ('d') to CSV (copy it into the session folder as bot_dump.csv)
   fleet-check     check bots/*.json for IR-ID collisions
-  schedule        write a schedule JSON (grid, steps, prbs, circles, ping, static, validation)
-  run             run a schedule on the rig (camera + blaster) or in the simulator (--sim)
+  schedule        write a schedule JSON (grid, cells, ping, static)
+  run             run a schedule on the rig (camera + blaster) or in the simulator (--sim); the operator
+                  re-centres the bot before every segment; --only picks segments
   track           tracker only: live camera or a recorded video -> tracker CSV
-  analyze         session folder(s) -> maps, polytope, lag, noise (report.py)
-  camera-calib    ChArUco intrinsics -> .npz (or --make-board to print the board)
+  analyze         session folder(s) -> twists, forward map, inverse map (report.py)
   selftest        offline test suite (no hardware)
 """
 from __future__ import annotations
@@ -30,7 +29,8 @@ def _rig(path):
 
 def _make_tracker(rig, bot_cfgs):
     """Tracker for the rig's references and the given rig-config bot entries (bots.<id>): LED offset and height
-    per bot, camera intrinsics and camera_height_m (both used for the LED-height correction)."""
+    per bot, camera intrinsics (an OpenCV .npz, optional) and camera_height_m (both used for the LED-height
+    correction)."""
     from .tracker import BotMarker, Tracker, Undistorter
     cam_cfg = rig.camera
     und = Undistorter.from_npz(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
@@ -75,9 +75,21 @@ def _print_fit(tracker):
     return _print_tracker_warnings(tracker)
 
 
+def read_info_serial(port, baud=115200):
+    """The bot's 'i' line over USB as a dict of its key=value fields."""
+    import serial
+    with serial.Serial(port, baud, timeout=1.0) as s:
+        time.sleep(0.3)
+        s.reset_input_buffer()
+        s.write(b"i")
+        ln = s.readline().decode("ascii", "replace").strip()
+    if not ln.startswith("I "):
+        raise RuntimeError(f"unexpected reply {ln!r}")
+    return P.info_fields(ln)
+
+
 def cmd_register(a):
-    from . import botlog
-    info = botlog.read_info_serial(a.port)
+    info = read_info_serial(a.port)
     err = P.proto_error(info, f"the bot on {a.port}", "calib_bot")
     if err:                                       # nothing is written: run would reject the file anyway
         raise SystemExit(f"{err}, then run register again")
@@ -89,14 +101,6 @@ def cmd_register(a):
     info["registered"] = time.strftime("%Y-%m-%d %H:%M:%S")
     (out / f"{bid}.json").write_text(json.dumps(info, indent=2))
     print(json.dumps(info, indent=2))
-
-
-def cmd_dump(a):
-    from .botlog import parse_dump, read_dump_serial
-    text = read_dump_serial(a.port)
-    Path(a.out).write_text(text + "\n")
-    info, stats, recs = parse_dump(text)
-    print(f"{len(recs)} records from bot {info.get('id')}; stats {stats}")
 
 
 def cmd_fleet_check(a):
@@ -113,35 +117,20 @@ def cmd_fleet_check(a):
 
 def cmd_schedule(a):
     seed = S.new_seed() if a.seed is None else a.seed
+    blocks = a.blocks if a.blocks is not None else (1 if a.kind == "cells" else 5)
     if a.kind == "grid":
-        specs = S.static_grid(blocks=a.blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=seed)
-    elif a.kind == "steps":
-        specs = S.steps([((60, 60), (100, 100)), ((80, 0), (80, 80)), ((0, 80), (80, 80)), ((70, 90), (90, 70))],
-                        hold_s=a.drive_s / 2)
-    elif a.kind == "prbs":
-        specs = S.prbs([(70, 70), (100, 100), (90, 60), (60, 90), (0, 90), (90, 0)], duration_s=a.drive_s,
-                       n_segments=a.blocks * 4, seed=seed)
-    elif a.kind == "circles":
-        specs = S.circles(json.loads(a.pairs or "[[100, 60], [60, 100]]"), duration_s=a.long_s)
+        specs = S.static_grid(blocks=blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=seed)
+    elif a.kind == "cells":
+        if not a.cells:
+            raise SystemExit('schedule cells needs --cells "[[L, R], ...]"')
+        pairs = json.loads(a.cells)
+        if not pairs or any(len(c) != 2 or max(abs(c[0]), abs(c[1])) > S.DRIVE_MAX for c in pairs):
+            raise SystemExit(f"--cells: a non-empty list of [L, R] pairs with |drive| <= {S.DRIVE_MAX}")
+        specs = S.cells(pairs, blocks=blocks, drive_s=a.drive_s, rest_s=a.rest_s)
     elif a.kind == "ping":
         specs = S.pings(a.long_s)
     elif a.kind == "static":
         specs = S.static(a.long_s)
-    elif a.kind == "validation":
-        from .forward_map import PowerLawMap
-        from .inverse_map import InverseMap
-        if not a.forward_map:
-            raise SystemExit("schedule validation needs --forward-map")
-        if a.p_min is not None and len(a.p_min) not in (1, 2):
-            raise SystemExit("--p-min takes one value (both motors) or two (L R)")
-        p_min = None if a.p_min is None else (a.p_min * 2)[:2]
-        try:
-            inv = InverseMap(PowerLawMap.load(a.forward_map), p_min=p_min, v_bat=a.v_bat)
-        except ValueError as e:
-            raise SystemExit(f"inverse map: {e}")
-        targets = json.loads(a.targets) if a.targets else [
-            (float(v), float(w)) for v in (0.06, 0.08, 0.10) for w in (-1.5, -0.8, 0.0, 0.8)]
-        specs = S.validation(targets, inv, duration_s=a.drive_s, seed=seed)
     else:
         raise SystemExit(f"unknown schedule kind {a.kind}")
     meta = {"kind": a.kind, "seed": seed, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -152,7 +141,7 @@ def cmd_schedule(a):
 
 def _check_proto(bot, bot_info, bot_file):
     """Refuse a bot registered with another IR protocol version: every frame would be a CRC error on it, so each
-    segment would end 'missed' and every re-centring in a 'no_progress' pause, with no hint at the cause."""
+    segment would end 'missed', with no hint at the cause."""
     if bot_info.get("proto") is None:             # not from register: nothing to compare
         return
     err = P.proto_error(bot_info, f"bot {bot} ({bot_file})", "calib_bot")
@@ -161,8 +150,8 @@ def _check_proto(bot, bot_info, bot_file):
 
 
 def _check_watchdog(bot, bot_info, period_ms, specs):
-    """Refuse a driving schedule when one lost frame would trip the bot's command watchdog (README B.4: at least
-    2.5 blaster periods). Link tests (ping) and static runs do not drive, so they may run at any period."""
+    """Refuse a driving schedule when one lost frame would trip the bot's command watchdog (at least 2.5 blaster
+    periods). Link tests (ping) and static runs do not drive, so they may run at any period."""
     wd = bot_info.get("watchdog_ms")
     if wd is None or all(s.kind in ("ping", "static") for s in specs):
         return
@@ -175,13 +164,20 @@ def _check_watchdog(bot, bot_info, period_ms, specs):
 def cmd_run(a):
     from .geometry import Arena
     from .poses import PoseStore, TrackerCSV
-    from .scheduler import RecentreConfig, Session, SessionConfig, SafetyConfig, console_pause
+    from .scheduler import Session, SessionConfig, console_getkey, console_pause
     specs, schedule_meta = S.load_with_meta(a.schedule)
+    extra = {"schedule_file": str(a.schedule), "schedule_meta": schedule_meta, "argv": sys.argv}
+    if a.only:                                    # the session's schedule.json and seg numbers are the selection
+        try:
+            idx = S.parse_selection(a.only, len(specs))
+        except ValueError as e:
+            raise SystemExit(f"--only: {e}")
+        specs = [specs[k] for k in idx]
+        extra["only"] = {"selection": a.only, "indices": idx}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     S.save(specs, out / "schedule.json", schedule_meta)
-    extra = {"schedule_file": str(a.schedule), "schedule_meta": schedule_meta, "argv": sys.argv}
-    led_mode, tracker, n_warn = "auto", None, 0
+    tracker, n_warn = None, 0
     if a.sim:
         from . import sim
         from .clock import SimClock
@@ -191,6 +187,11 @@ def cmd_run(a):
         geom, arena = p.geometry, Arena(0.0, 1.0, 0.0, 1.0, 0.08)
         extra.update({"simulated": True, "pwm_hz": "sim"})
         on_pause = (lambda msg: (print("PAUSE (sim, aborting):", msg), "abort")[1])
+
+        def getkey():                             # the simulated operator: bot back at the centre, then Enter
+            plant = world.plants[a.bot]
+            plant.x, plant.y = 0.5, 0.5
+            return "\r"
         cam = None
     else:
         from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, BridgeError, SerialBridge
@@ -222,7 +223,6 @@ def cmd_run(a):
         cam.start()
         _wait_for_fit(tracker, cam)
         n_warn = _print_fit(tracker)
-        led_mode = tracker.led_mode
         try:                                      # e.g. a blaster on another protocol version
             bridge = SerialBridge(a.port or rig.bridge["port"], period_ms=period_ms)
         except BridgeError as e:
@@ -232,11 +232,11 @@ def cmd_run(a):
         clock = RealClock()
         extra.update({"rig": rig.to_dict(), "homography_rms_m": tracker.reproj_rms_m,
                       "ref_check": tracker.ref_check, "reference_summary": tracker.reference_summary(),
-                      "tracker_warnings": [w for _, w in tracker.warnings[:n_warn]]})
+                      "tracker_warnings": [w for _, w in tracker.warnings[:n_warn]], "led_mode": tracker.led_mode})
         on_pause = console_pause
-    cfg = SessionConfig(bot_id=a.bot, geometry=geom, arena=arena, out_dir=str(out), notes=a.notes or "",
-                        safety=SafetyConfig(), recentre=RecentreConfig(), led_mode=led_mode)
-    sess = Session(cfg, bridge, poses, clock, on_pause=on_pause, extra_meta=extra)
+        getkey = console_getkey()
+    cfg = SessionConfig(bot_id=a.bot, geometry=geom, arena=arena, out_dir=str(out), notes=a.notes or "")
+    sess = Session(cfg, bridge, poses, clock, getkey, on_pause=on_pause, extra_meta=extra)
     try:
         counts = sess.run(specs)
         print("done:", counts)
@@ -290,26 +290,13 @@ def cmd_track(a):
 
 def cmd_analyze(a):
     from .report import analyze
-    s = analyze(a.sessions, a.out, gp=a.gp, bootstrap_n=a.bootstrap)
+    s = analyze(a.sessions, a.out, bootstrap_n=a.bootstrap)
     fm = s.get("forward_map", {})
     print(json.dumps({"n_segments_fit": s.get("n_segments_fit"), "selected": fm.get("meta", {}).get("selected"),
                       "p0": fm.get("p0"), "gamma": fm.get("gamma"), "latency": s.get("latency"),
-                      "dynamics": {k: {kk: v[kk] for kk in ("dead_time", "tau")} for k, v in s.get("dynamics", {}).items()},
-                      "error": s.get("error")}, indent=2, default=float))
+                      "replicate_scatter": s.get("replicate_scatter"), "error": s.get("error")},
+                     indent=2, default=float))
     print(f"full results in {a.out}/calib.json")
-
-
-def cmd_camera_calib(a):
-    import cv2
-    from . import intrinsics
-    board = intrinsics.make_board(tuple(a.squares), a.square_m, a.marker_m)
-    if a.make_board:
-        cv2.imwrite(a.make_board, intrinsics.board_image(board))
-        print(f"wrote {a.make_board}; print at 100 % and measure the square size")
-        return
-    res = intrinsics.calibrate_folder(a.images, a.out, squares=tuple(a.squares), square_m=a.square_m,
-                                      marker_m=a.marker_m)
-    print(f"views {res['views']}, RMS {res['rms_px']:.3f} px -> {a.out}")
 
 
 def cmd_selftest(a):
@@ -327,27 +314,19 @@ def main(argv=None):
 
     p = sub.add_parser("register"); p.add_argument("--port", required=True); p.add_argument("--bots-dir", default="bots")
     p.set_defaults(fn=cmd_register)
-    p = sub.add_parser("dump"); p.add_argument("--port", required=True); p.add_argument("--out", required=True)
-    p.set_defaults(fn=cmd_dump)
     p = sub.add_parser("fleet-check"); p.add_argument("--bots-dir", default="bots"); p.set_defaults(fn=cmd_fleet_check)
 
     p = sub.add_parser("schedule")
-    p.add_argument("kind", choices=["grid", "steps", "prbs", "circles", "ping", "static", "validation"])
+    p.add_argument("kind", choices=["grid", "cells", "ping", "static"])
     p.add_argument("--out", required=True)
-    p.add_argument("--blocks", type=int, default=5)
+    p.add_argument("--blocks", type=int, help="randomised blocks of the grid, or how many times each cell runs "
+                                              "(cells). Default 5, cells 1")
     p.add_argument("--drive-s", type=float, default=3.0)
     p.add_argument("--rest-s", type=float, default=0.8)
-    p.add_argument("--long-s", type=float, default=60.0)
-    p.add_argument("--pairs", help="JSON list of [L, R] for circles")
-    p.add_argument("--forward-map", help="forward_map.json (validation)")
-    p.add_argument("--targets", help="JSON list of [v, omega] (validation)")
-    p.add_argument("--p-min", type=float, nargs="+", metavar="DRIVE",
-                   help="validation: lowest drive of the operating region, one value or L R (default: per motor "
-                        "max(60, p0 + 5), the same as analyze)")
-    p.add_argument("--v-bat", type=float, help="validation: battery voltage [V] at which a 'bat' map is inverted "
-                                               "(default: its median training voltage; ignored by other models)")
-    p.add_argument("--seed", type=int, help="order seed for grid / prbs / validation (default: a fresh random one; "
-                                            "it is recorded in the schedule JSON)")
+    p.add_argument("--long-s", type=float, default=60.0, help="length of a ping or static run")
+    p.add_argument("--cells", help='cells: JSON list of [L, R] drive pairs, run in this order, e.g. "[[80, 80], [100, 60]]"')
+    p.add_argument("--seed", type=int, help="order seed for the grid (default: a fresh random one; it is recorded "
+                                            "in the schedule JSON)")
     p.set_defaults(fn=cmd_schedule)
 
     p = sub.add_parser("run")
@@ -361,6 +340,8 @@ def main(argv=None):
     p.add_argument("--sim", action="store_true", help="simulated bot, rig and blaster (dry run)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--notes")
+    p.add_argument("--only", metavar="SEL", help='run these segments of the schedule only, e.g. "0-3,7,12-" '
+                                                 "(indices as in the schedule file, in the order given)")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("track")
@@ -372,14 +353,8 @@ def main(argv=None):
 
     p = sub.add_parser("analyze")
     p.add_argument("sessions", nargs="+"); p.add_argument("--out", required=True)
-    p.add_argument("--gp", action="store_true"); p.add_argument("--bootstrap", type=int, default=50)
+    p.add_argument("--bootstrap", type=int, default=50)
     p.set_defaults(fn=cmd_analyze)
-
-    p = sub.add_parser("camera-calib")
-    p.add_argument("--images"); p.add_argument("--out", default="camera.npz"); p.add_argument("--make-board")
-    p.add_argument("--squares", type=int, nargs=2, default=(7, 5))
-    p.add_argument("--square-m", type=float, default=0.03); p.add_argument("--marker-m", type=float, default=0.022)
-    p.set_defaults(fn=cmd_camera_calib)
 
     p = sub.add_parser("selftest"); p.add_argument("-v", "--verbose", action="store_true"); p.set_defaults(fn=cmd_selftest)
 

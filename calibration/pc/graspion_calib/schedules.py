@@ -1,9 +1,9 @@
-"""Calibration schedules (FEASIBILITY.md 5.2 steps 3-7). A schedule is a list of SegmentSpec, saved as JSON
-together with how it was made ({"meta": {"kind", "seed", ...}, "segments": [...]}).
+"""Calibration schedules. A schedule is a list of SegmentSpec, saved as JSON together with how it was made
+({"meta": {"kind", "seed", ...}, "segments": [...]}).
 
-Drive values are on the signed drive scale of the firmware (-120..120, 0 = motor off). The randomised schedules
-take an explicit seed; the command line draws a fresh one per schedule (new_seed) and records it, so every bot
-and every battery gets its own order and any schedule can be regenerated.
+Drive values are on the signed drive scale of the firmware (-120..120, 0 = motor off). The grid takes an explicit
+seed; the command line draws a fresh one per schedule (new_seed) and records it, so every bot and every battery
+gets its own order and any schedule can be regenerated.
 """
 from __future__ import annotations
 
@@ -13,19 +13,20 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+DRIVE_MAX = 120                 # the firmware's cap (HARDWARE.md 4.4); the frame itself carries up to protocol.DRIVE_LIMIT
 GRID = (0, 55, 60, 70, 80, 90, 100, 110, 120)
 REVERSE = ((-90, -90), (-90, 90), (90, -90), (-60, -60), (-120, -120), (-90, 0), (0, -90), (-60, -80))
 
 
 @dataclass
 class SegmentSpec:
-    kind: str                       # drive | steps | prbs | ping | static
-    levels: list                    # [[t_offset_s, L, R], ...], first offset 0
+    kind: str                       # drive | ping | static
+    levels: list                    # [[t_offset_s, L, R]]; one level per segment
     duration_s: float
     rest_s: float = 0.8
     block: int = 0
     tag: str = ""
-    recentre: bool = True
+    pause: bool = True              # stop and wait for the operator before this segment (scheduler)
 
     @property
     def L(self):
@@ -51,66 +52,29 @@ def static_grid(levels=GRID, reverse=REVERSE, blocks=5, drive_s=3.0, rest_s=0.8,
     """Signed grid: every (L, R) in levels x levels except (0, 0), plus reverse-polarity checks; each block holds
     every cell once in a new random order (randomised blocks, so drift with battery and leg wear averages out)."""
     rng = np.random.default_rng(seed)
-    cells = [(a, b) for a in levels for b in levels if (a, b) != (0, 0)] + list(reverse)
+    cells_ = [(a, b) for a in levels for b in levels if (a, b) != (0, 0)] + list(reverse)
     out = []
     for blk in range(blocks):
-        for k in rng.permutation(len(cells)):
-            L, R = cells[k]
+        for k in rng.permutation(len(cells_)):
+            L, R = cells_[k]
             out.append(drive(L, R, drive_s, rest_s, blk, "grid" if (L >= 0 and R >= 0) else "reverse"))
     return out
 
 
-def steps(pairs, hold_s=1.5, rest_s=0.8, block=0):
-    """Two-level step segments: start at A (a step from rest), switch to B after hold_s; both orders."""
-    out = []
-    for a, b in pairs:
-        for x, y in ((a, b), (b, a)):
-            out.append(SegmentSpec("steps", [[0.0, *x], [hold_s, *y]], 2 * hold_s, rest_s, block, "step"))
-    return out
-
-
-def prbs(levels, duration_s=3.0, switch_min=0.1, switch_max=0.5, n_segments=10, rest_s=0.8, seed=0):
-    """Random switching between drive levels (pairs), dwell U(switch_min, switch_max); one chunk per segment."""
-    rng = np.random.default_rng(seed)
-    out = []
-    for i in range(n_segments):
-        t, seq, last = 0.0, [], None
-        while t < duration_s - 1e-9:
-            choices = [k for k in range(len(levels)) if k != last] or [0]
-            last = int(rng.choice(choices))
-            seq.append([round(t, 3), *levels[last]])
-            t += rng.uniform(switch_min, switch_max)
-        out.append(SegmentSpec("prbs", seq, duration_s, rest_s, i, "prbs"))
-    return out
-
-
-def circles(pairs, duration_s=60.0, rest_s=2.0):
-    """Long steady runs (CW and CCW circles of R ~ 5-15 cm) for heading diffusion and speed jitter."""
-    return [SegmentSpec("drive", [[0.0, int(L), int(R)]], duration_s, rest_s, 0, "circle") for L, R in pairs]
+def cells(pairs, blocks=1, drive_s=3.0, rest_s=0.8):
+    """Chosen (L, R) cells in the given order, every block once more: trial runs, re-runs of single cells and the
+    few-shot subsets of a held-out bot. No shuffling: the operator sees what comes next."""
+    return [drive(L, R, drive_s, rest_s, blk, "cells") for blk in range(blocks) for L, R in pairs]
 
 
 def pings(duration_s=30.0):
     """Link test: PING frames at the blaster period; the bot flashes, no motion. Measures loss and latency."""
-    return [SegmentSpec("ping", [[0.0, 0, 0]], duration_s, 0.5, 0, "ping", recentre=False)]
+    return [SegmentSpec("ping", [[0.0, 0, 0]], duration_s, 0.5, 0, "ping", pause=False)]
 
 
 def static(duration_s=60.0):
     """Tracker-only window with the bot at rest: measurement-noise floor."""
-    return [SegmentSpec("static", [[0.0, 0, 0]], duration_s, 0.0, 0, "static", recentre=False)]
-
-
-def validation(targets, inverse_map, duration_s=3.0, rest_s=0.8, reps=2, seed=0):
-    """Command (v, omega) targets through the fitted inverse map; feasible targets only, randomised order."""
-    rng = np.random.default_rng(seed)
-    out = []
-    for r in range(reps):
-        for k in rng.permutation(len(targets)):
-            v, w = targets[k]
-            L, R, ok = inverse_map.drive_for(v, w)
-            if ok:
-                s = drive(L, R, duration_s, rest_s, r, f"validate v={v:.4f} w={w:.3f}")
-                out.append(s)
-    return out
+    return [SegmentSpec("static", [[0.0, 0, 0]], duration_s, 0.0, 0, "static", pause=False)]
 
 
 def new_seed() -> int:
@@ -137,9 +101,29 @@ def load(path):
     return load_with_meta(path)[0]
 
 
-def summary(specs, recentre_s=4.0):
+def parse_selection(text, n):
+    """Segment indices from "0-3,7,12-" (ranges inclusive, an open end runs to the last segment), in order, each
+    once. ValueError on anything else or an index outside 0..n-1."""
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        a, dash, b = part.partition("-")
+        lo = int(a)
+        hi = (n - 1 if b == "" else int(b)) if dash else lo
+        if not 0 <= lo <= hi < n:
+            raise ValueError(f"segment selection {part!r} outside 0..{n - 1}")
+        out.extend(k for k in range(lo, hi + 1) if k not in out)
+    if not out:
+        raise ValueError("empty segment selection")
+    return out
+
+
+def summary(specs, pause_s=8.0):
+    """Segment count and a time estimate; pause_s is the operator's handling time per paused segment."""
     drive_s = sum(s.duration_s for s in specs)
     rest_s = sum(s.rest_s for s in specs)
-    n_rc = sum(1 for s in specs if s.recentre)
+    n_pause = sum(1 for s in specs if s.pause)
     return {"segments": len(specs), "drive_min": drive_s / 60, "rest_min": rest_s / 60,
-            "estimated_total_min": (drive_s + rest_s + n_rc * recentre_s) / 60}
+            "estimated_total_min": (drive_s + rest_s + n_pause * pause_s) / 60}

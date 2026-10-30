@@ -15,7 +15,7 @@ The script checks the layout: under HARDWARE.md 4.4 omega must fall with L and r
 and it warns otherwise. Left/right itself is INFERRED (HARDWARE.md 4.4).
 
 Compared, all by leave-one-cell-out CV (every cell is one value, so a cell is its own group):
-    ours  graspion_calib.forward_map 'lin', 'int', 'cor' (dead-zone power law, shared p0 / gamma), optional --gp:
+    ours  graspion_calib.forward_map 'lin', 'int', 'cor' (dead-zone power law, shared p0 / gamma):
           once as `analyze` runs them (p0 free in 0..100), and once with p0 below the lowest grid drive (every
           cell moved), plus 'lin' fitted to v only and to omega only (is the shared p0 / gamma the cost?)
     lab   polynomials in raw power: plane, quadratic, cubic (v); plane, quadratic (omega)
@@ -123,7 +123,6 @@ def main():
     ap.add_argument("--omega", default=os.path.join(data, "omega_table.npy"), help="omega table, rad/s")
     ap.add_argument("--rows", default="r-asc", choices=("r-desc", "r-asc"),
                     help="table layout (default r-asc, the layout of lab_fit/data)")
-    ap.add_argument("--gp", action="store_true", help="add the GP comparator to the CV")
     ap.add_argument("--p0-margin", type=float, default=5.0,
                     help="bounded fits keep p0 this far below the lowest grid drive (default 5)")
     ap.add_argument("--boot", type=int, default=200, help="cell-bootstrap draws for the 'cor' offset (0 = off)")
@@ -140,7 +139,7 @@ def main():
     print(f"data: {len(L)} cells, v {v.min() * 100:.2f}..{v.max() * 100:.2f} cm/s, omega {w.min():+.2f}..{w.max():+.2f} rad/s")
 
     Y = np.c_[v, np.zeros_like(v), w]
-    cv = fm.grouped_cv(L, R, Y, variants=("lin", "int", "cor"), k_folds=None, gp=a.gp)
+    cv = fm.grouped_cv(L, R, Y, variants=("lin", "int", "cor"), k_folds=None)
     lab = {"v": {f"poly{d}": loo_poly(L, R, v, d) for d in (1, 2, 3)},
            "omega": {f"poly{d}": loo_poly(L, R, w, d) for d in (1, 2)}}
 

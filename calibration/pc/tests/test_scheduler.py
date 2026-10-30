@@ -21,10 +21,11 @@ from graspion_calib.__main__ import main as cli_main
 from graspion_calib.clock import SimClock
 from graspion_calib.extract import read_csv
 from graspion_calib.geometry import Arena
-from graspion_calib.poses import Detection, PoseStore, TrackerCSV
-from graspion_calib.scheduler import RecentreConfig, SafetyConfig, Session, SessionConfig
+from graspion_calib.poses import Detection, PoseStore
+from graspion_calib.scheduler import Session, SessionConfig
 
-from .simrig import BOT, SERIAL, FakeBlasterSerial, FakeBotSerial, abort_on_pause, bot_info_line, run_session
+from .simrig import (BOT, SERIAL, FakeBlasterSerial, FakeBotSerial, ScriptedKeys, abort_on_pause, bot_info_line,
+                     enter_key, run_session)
 
 
 def op_of(raw):
@@ -36,6 +37,11 @@ def wall_clearance(world, tracker_csv, arena):
     tr = read_csv(tracker_csv)
     bx, by, _ = world.params[BOT].geometry.body_from_marker(tr["x"], tr["y"], tr["theta"])
     return float(np.min(np.minimum.reduce([bx - arena.xmin, arena.xmax - bx, by - arena.ymin, arena.ymax - by])))
+
+
+def events(out):
+    """Event names of a session (read_csv gives {} for a session with no event at all)."""
+    return list(read_csv(Path(out) / "events.csv").get("event", []))
 
 
 class TempDirCase(unittest.TestCase):
@@ -72,7 +78,7 @@ class TestFirmwareSemantics(unittest.TestCase):
         self.assertEqual((self.fw.L, self.fw.R), (90, 90))
         self.w.advance(t_last + self.p.watchdog_s + 0.01)
         self.assertEqual((self.fw.L, self.fw.R), (0, 0))
-        self.assertEqual(self.fw.log[-1]["end_reason"], 4)
+        self.assertEqual(self.fw.stats["wd_trips"], 1)
         self.w.advance(self.w.t + 0.5)
         self.assertLess(abs(self.w.plants[BOT].v) + abs(self.w.plants[BOT].w), 1e-3)
 
@@ -92,7 +98,6 @@ class TestFirmwareSemantics(unittest.TestCase):
     def test_recentre_closes_segment(self):
         self.tx(P.pack(BOT, P.OP_SEG, 80, 80))
         self.tx(P.pack(BOT, P.OP_RECENTRE, 0, 90))
-        self.assertEqual(self.fw.log[-1]["end_reason"], 2)
         self.assertEqual((self.fw.L, self.fw.R), (0, 90))
         self.tx(P.pack(BOT, P.OP_DRIVE, 80, 80))                     # segment closed: not executed, stops
         self.assertEqual((self.fw.L, self.fw.R), (0, 0))
@@ -100,9 +105,11 @@ class TestFirmwareSemantics(unittest.TestCase):
 
 
 class TestScheduler(TempDirCase):
+    """Segments with an operator who presses Enter at once (simrig.enter_key)."""
+
     def test_grid_session(self):
         specs = S.static_grid(blocks=1)[:10]
-        world, counts = run_session(self.dir, specs)
+        world, counts = run_session(self.dir, specs, start=(0.5, 0.5, 0.3))
         segs, frames = read_csv(self.dir / "segments.csv"), read_csv(self.dir / "frames.csv")
         self.assertTrue(np.all(segs["status"] == "ok"))
         self.assertEqual(int(np.sum(segs["attempt"] == 0)), 10)
@@ -154,15 +161,6 @@ class TestScheduler(TempDirCase):
         self.assertTrue(np.all((bx > arena.xmin) & (bx < arena.xmax) & (by > arena.ymin) & (by < arena.ymax)),
                         "bot left the arena")
 
-    def test_low_battery(self):
-        p = sim.SimParams(v_bat0=3.45, v_sag=0.12)
-        world, counts = run_session(self.dir, [S.drive(110, 110)], params=p)
-        segs = read_csv(self.dir / "segments.csv")
-        self.assertIn("lowbat", list(segs["status"]))
-        self.assertTrue(world.fw[BOT].lowbat)
-        self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
-        self.assertTrue(any("low battery" in m for m in abort_on_pause.messages))
-
     def test_missed_seg_is_retried(self):
         dropped = []
 
@@ -183,16 +181,8 @@ class TestScheduler(TempDirCase):
         self.assertEqual(list(segs["status"]), ["missed", "ok"])
         self.assertEqual(list(segs["attempt"]), [0, 1])
 
-    def test_recentre_from_corner(self):
-        world, counts = run_session(self.dir, [S.drive(70, 70, duration_s=1.0)], start=(0.15, 0.85, -2.5))
-        ev = read_csv(self.dir / "events.csv")
-        self.assertIn("recentred", list(ev["event"]))
-        segs = read_csv(self.dir / "segments.csv")
-        hx, hy = 0.5, 0.5
-        self.assertLess(math.hypot(segs["x0"][0] - hx, segs["y0"][0] - hy), 0.08)
-
     def test_geofence_lookahead_follows_period(self):
-        """A longer blaster period means a longer stop latency; the lookahead must grow with it (README B.4)."""
+        """A longer blaster period means a longer stop latency; the lookahead must grow with it."""
         arena = Arena(0.0, 1.0, 0.0, 1.0, 0.08)
         for th in (0.0, 2.4):
             with self.subTest(th=th):
@@ -206,199 +196,111 @@ class TestScheduler(TempDirCase):
                 # with the old fixed 0.3 s lookahead the body point got to 3-5 cm from the wall here
                 self.assertGreater(wall_clearance(world, out / "tracker.csv", arena), arena.margin - 0.01)
 
-
-class TestRecentreSafety(TempDirCase):
-    """Re-centring with wrong guesses (README B.7) must stop the bot instead of driving it into the wall."""
-
-    def test_marker_yaw_off_by_pi(self):
-        p = sim.SimParams()
-        g_pc = dataclasses.replace(p.geometry, marker_yaw=p.geometry.marker_yaw + math.pi)   # marker glued backwards
-        arena = Arena(0.0, 1.0, 0.0, 1.0, 0.08)
-        world, _ = run_session(self.dir, [S.drive(80, 80, duration_s=1.0)], params=p, geometry=g_pc, arena=arena,
-                               start=(0.2, 0.2, math.pi + math.pi / 4 + 0.3))
-        ev = list(read_csv(self.dir / "events.csv")["event"])
-        self.assertTrue({"recentre_diverging", "recentre_geofence", "recentre_no_progress"} & set(ev), ev)
-        self.assertTrue(any("re-centring failed" in m for m in abort_on_pause.messages))
-        self.assertLess(world.t, 6.0)                                    # stopped in seconds, not after 25 s
-        self.assertGreater(wall_clearance(world, self.dir / "tracker.csv", arena), 0.04)
-        self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
-
-    def test_swapped_pivot_pairs(self):
-        arena = Arena(0.0, 1.0, 0.0, 1.0, 0.08)
-        rc = RecentreConfig(pivot_ccw=(90, 0), pivot_cw=(0, 90))         # e.g. a board that pivots the other way
-        world, _ = run_session(self.dir, [S.drive(80, 80, duration_s=1.0)], recentre=rc, arena=arena,
-                               start=(0.2, 0.2, 0.0))
-        ev = list(read_csv(self.dir / "events.csv")["event"])
-        self.assertTrue({"recentre_geofence", "recentre_no_progress"} & set(ev), ev)
-        self.assertLess(world.t, 8.0)
-        self.assertGreater(wall_clearance(world, self.dir / "tracker.csv", arena), 0.015)
-
-    def test_low_battery_during_recentre(self):
-        """The latched bot answers RECENTRE with a red flash and no motion: pause for the battery at once."""
-        p = sim.SimParams(v_bat0=3.42, v_sag=0.12)                       # trips once the motors load it
-        world, _ = run_session(self.dir, [S.drive(80, 80)], params=p, start=(0.2, 0.2, 0.0))
-        ev = list(read_csv(self.dir / "events.csv")["event"])
-        self.assertIn("recentre_lowbat", ev)
-        self.assertTrue(world.fw[BOT].lowbat)
-        self.assertTrue(any("low battery" in m for m in abort_on_pause.messages))
-        self.assertFalse(any("re-centring failed" in m for m in abort_on_pause.messages))
-        self.assertLess(world.t, 8.0)
-
-
-class MonoPoseStore(PoseStore):
-    """What the scheduler gets from the tracker's luma mode (mono camera): led_b = patch brightness, which either
-    flash colour raises, and led_r = NaN."""
-
-    def put(self, det):
-        super().put(dataclasses.replace(det, led_b=det.led_b + det.led_r, led_r=float("nan")))
-
-
-def run_mono_session(out, specs, params, start, led_mode="auto"):
-    """simrig.run_session with a mono camera; returns (world, printed text)."""
-    out.mkdir(parents=True, exist_ok=True)
-    world = sim.SimWorld({BOT: (params, start)}, seed=0, pose_store=MonoPoseStore(),
-                         tracker_csv=TrackerCSV(out / "tracker.csv"))
-    cfg = SessionConfig(BOT, params.geometry, Arena(0.0, 1.0, 0.0, 1.0, 0.08), str(out), led_mode=led_mode)
-    printed = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(printed):
-            Session(cfg, sim.SimBridge(world), world.poses, SimClock(world), on_pause=abort_on_pause).run(specs)
-    finally:
-        world.csv.close()
-    return world, printed.getvalue()
-
-
-class ChromaPoseStore(PoseStore):
-    """The tracker's chroma channels on a colour camera, where each flash colour pulls the other channel down by
-    half its rise (led_r = R - (G+B)/2: a blue flash lowers it). While `hidden`, the LED patch is outside the
-    image: both LED values NaN (the sim's own camera has neither effect)."""
-
-    def __init__(self, base):
-        super().__init__()
-        self.base, self.hidden = base, True
-
-    def put(self, det):
-        nan = float("nan")
-        if self.hidden:
-            det = dataclasses.replace(det, led_b=nan, led_r=nan)
-        else:
-            rise_b, rise_r = det.led_b - self.base[0], det.led_r - self.base[1]
-            det = dataclasses.replace(det, led_b=det.led_b - 0.5 * rise_r, led_r=det.led_r - 0.5 * rise_b)
-        super().put(det)
-
-
-class TestLedSignal(TempDirCase):
-    """LED checks with NaN samples (LED patch outside the image) and with a mono camera (no red channel)."""
-
-    def test_sync_flash_with_no_red_baseline(self):
-        """No LED sample in the second before the SEG: the blue sync flash's dip in led_r, measured from the
-        window's lowest sample, used to read as a red low-battery flash. A latched bot's red flash still counts."""
-        for v_bat0, expected in ((4.05, "ok"), (3.45, "lowbat")):
-            with self.subTest(v_bat0=v_bat0):
-                out = self.dir / f"v{v_bat0}"
-                out.mkdir()
-                p = sim.SimParams(ir_loss=0.0, v_bat0=v_bat0, v_sag=0.12)
-                store = ChromaPoseStore(p.led_base)
-                world = sim.SimWorld({BOT: (p, (0.45, 0.5, 0.3))}, seed=0, pose_store=store,
-                                     tracker_csv=TrackerCSV(out / "tracker.csv"))
-                bridge = sim.SimBridge(world)
-                send = bridge.send
-
-                def show_led_from_seg(raw, check=True, send=send, store=store):
-                    if op_of(raw) == P.OP_SEG:
-                        store.hidden = False                     # the LED patch comes into view with the SEG
-                    return send(raw, check)
-                bridge.send = show_led_from_seg
-                cfg = SessionConfig(BOT, p.geometry, Arena(0.0, 1.0, 0.0, 1.0, 0.08), str(out), led_mode="chroma")
-                try:
-                    Session(cfg, bridge, world.poses, SimClock(world), on_pause=abort_on_pause).run(
-                        [dataclasses.replace(S.drive(110, 110), recentre=False)])
-                finally:
-                    world.csv.close()
-                segs = read_csv(out / "segments.csv")
-                self.assertEqual(segs["status"][0], expected)
-                if expected == "ok":
-                    self.assertEqual(int(segs["flash_live"][0]), 1)
-                    self.assertFalse(abort_on_pause.messages)
-                else:
-                    self.assertTrue(world.fw[BOT].lowbat)
-
-    def _session(self, **cfg_kw):
+    def test_flash_check_skips_nan_samples(self):
         world = sim.SimWorld({BOT: (sim.SimParams(ir_loss=0.0), (0.5, 0.5, 0.0))}, seed=0)
-        cfg = SessionConfig(BOT, sim.SimParams().geometry, Arena(), str(self.dir), **cfg_kw)
-        return Session(cfg, sim.SimBridge(world), PoseStore(), SimClock(world), on_pause=abort_on_pause)
-
-    def _put(self, sess, samples):
-        mid = sess.cfg.geometry.marker_id
-        for k, (t, b, r) in enumerate(samples):
-            sess.poses.put(Detection(k, t, mid, 0.5, 0.5, 0.0, b, r, 0.02, 4))
-
-    def test_nan_samples_do_not_hide_a_flash(self):
+        cfg = SessionConfig(BOT, sim.SimParams().geometry, Arena(), str(self.dir))
+        sess = Session(cfg, sim.SimBridge(world), PoseStore(), SimClock(world), enter_key, on_pause=abort_on_pause)
         nan = float("nan")
-        sess = self._session(led_mode="chroma")
-        self._put(sess, [(0.0, nan, nan), (0.1, 30.0, nan), (0.2, 32.0, nan), (0.3, nan, nan),
-                         (1.0, nan, nan), (1.05, 160.0, nan), (1.1, 31.0, nan)])
-        base_b, base_r = sess._led_baseline(1.0)
-        self.assertAlmostEqual(base_b, 31.0)                     # median of the finite samples only
-        self.assertTrue(math.isnan(base_r))                      # nothing finite: NaN, not 0
-        self.assertTrue(sess._flash_seen(1.0, 1.2, base_b, "b"))  # max() over [nan, 160, ...] would be nan
-        self.assertTrue(sess._flash_seen(1.0, 1.2, nan, "b"))     # no baseline: rise over the window's minimum
-        self.assertFalse(sess._flash_seen(1.0, 1.2, base_r, "r"))  # no finite red sample: no flash, no error
-        self.assertFalse(sess._flash_seen(1.1, 1.2, base_b, "b"))
-        sess.run([])                                             # closes the session files
+        mid = cfg.geometry.marker_id
+        for k, (t, b) in enumerate([(0.0, nan), (0.1, 30.0), (0.2, 32.0), (0.3, nan), (1.0, nan), (1.05, 160.0),
+                                    (1.1, 31.0)]):
+            sess.poses.put(Detection(k, t, mid, 0.5, 0.5, 0.0, b, nan, 0.02, 4))
+        self.assertAlmostEqual(sess._led_baseline(1.0), 31.0)      # median of the finite samples only
+        self.assertTrue(sess._flash_seen(1.0, 1.2, 31.0))          # max() over [nan, 160, ...] would be nan
+        self.assertTrue(sess._flash_seen(1.0, 1.2, nan))           # no baseline: rise over the window's minimum
+        self.assertFalse(sess._flash_seen(1.1, 1.2, 31.0))
+        sess.run([])                                               # closes the session files
 
-    def test_mono_warns_once_at_session_start(self):
-        sess = self._session(led_mode="luma")
-        printed = io.StringIO()
+
+class TestOperatorPause(TempDirCase):
+    """The pause before every segment: the operator places or nudges the bot and starts it (README 5 E)."""
+
+    def run_keys(self, specs, keys, start=(0.3, 0.3, 0.5), **kw):
+        world_ref, printed = {}, io.StringIO()
+
+        def bridge(world):
+            world_ref["w"] = world
+            return sim.SimBridge(world)
         with contextlib.redirect_stdout(printed):
-            sess.run([])
-            self.assertTrue(sess._mono())                        # no second warning
-        self.assertEqual(printed.getvalue().count("warning: mono camera"), 1)
-        ev = read_csv(self.dir / "events.csv")
-        self.assertEqual(ev["event"][0], "warning")
-        meta = json.loads((self.dir / "session.json").read_text())
-        self.assertEqual(meta["led_mode"], "luma")
-        self.assertEqual(len(meta["warnings"]), 1)
+            world, counts = run_session(self.dir, specs, start=start, bridge_factory=bridge, quiet=False,
+                                        getkey=ScriptedKeys((lambda: keys(world_ref)) if callable(keys) else keys),
+                                        **kw)
+        return world, counts, printed.getvalue()
 
-    def test_mono_low_battery_falls_back_to_the_bot_latch(self):
-        """As TestRecentreSafety.test_low_battery_during_recentre, on a mono camera: the red flash is not seen, the
-        bot stops itself, and the re-centring progress check pauses with a battery hint."""
-        p = sim.SimParams(v_bat0=3.42, v_sag=0.12)
-        world, printed = run_mono_session(self.dir, [S.drive(80, 80)], p, (0.2, 0.2, 0.0))
-        ev = list(read_csv(self.dir / "events.csv")["event"])
-        self.assertNotIn("recentre_lowbat", ev)
-        self.assertIn("recentre_no_progress", ev)
-        self.assertEqual(ev.count("warning"), 1)
-        self.assertEqual(printed.count("warning: mono camera"), 1)
-        self.assertTrue(world.fw[BOT].lowbat)                    # the bot's own latch stopped it
+    def test_enter_runs_from_where_the_bot_stands(self):
+        world, counts, text = self.run_keys([S.drive(80, 80)], [None, None, "\r"])
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertEqual(list(segs["status"]), ["ok"])
+        self.assertNotIn("RECENTRE", list(frames["op"]))                 # nothing drove the bot home
+        self.assertLess(math.hypot(segs["x0"][0] - 0.3, segs["y0"][0] - 0.3), 0.03)   # started where it stood
+        self.assertIn("cm from home", text)
+        self.assertEqual(frames["purpose"][0], "pause")                  # motors off while the operator handles it
+        self.assertFalse(abort_on_pause.messages)
+
+    def test_nudges_then_hand_placement(self):
+        after_nudge = []
+
+        def keys(ref):
+            def record():
+                pl = ref["w"].plants[BOT]
+                after_nudge.append((pl.x, pl.y))
+
+            def place():                                                 # the operator sets the bot at home
+                pl = ref["w"].plants[BOT]
+                pl.x, pl.y, pl.th = 0.5, 0.5, 0.0
+            return ["w", record, "a", "d", place, None, None, "\r"]
+        world, counts, text = self.run_keys([S.drive(80, 80)], keys)
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertGreater(math.hypot(after_nudge[0][0] - 0.3, after_nudge[0][1] - 0.3), 0.015)  # the nudge moved it
+        rc = [(int(frames["L"][k]), int(frames["R"][k])) for k in range(len(frames["op"])) if frames["op"][k] == "RECENTRE"]
+        self.assertEqual(sorted(set(rc)), [(0, 90), (85, 85), (90, 0)])  # the nudge drive pairs, nothing else
+        self.assertGreaterEqual(rc.count((85, 85)), 4)                   # 0.6 s at the 110 ms period
+        purposes = list(frames["purpose"])
+        self.assertIn("nudge_w", purposes)
+        self.assertEqual(purposes[purposes.index("nudge_w") + rc.count((85, 85))], "nudge_stop")  # STOP ends it
+        self.assertEqual(list(segs["status"]), ["ok"])
+        self.assertLess(math.hypot(segs["x0"][0] - 0.5, segs["y0"][0] - 0.5), 0.03)   # ran from the placed pose
+        self.assertFalse({e for e in events(self.dir) if e.startswith("nudge_")})    # no nudge was cut short
+        self.assertEqual(world.fw[BOT].stats["wd_trips"], 0)
+        self.assertEqual(world.fw[BOT].stats["drive_no_seg"], 0)
+
+    def test_skip_and_quit(self):
+        specs = [S.drive(80, 80, duration_s=1.0) for _ in range(3)]
+        world, counts, text = self.run_keys(specs, ["x", "\r", "q"], start=(0.5, 0.5, 0.0))
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertEqual(list(segs["seg"]), [1])                        # only the second segment ran
+        self.assertEqual(list(segs["status"]), ["ok"])
+        ev = events(self.dir)
+        self.assertEqual(ev.count("skipped"), 1)
+        self.assertIn("abort", ev)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(list(frames["purpose"][-2:]), ["final", "final_broadcast"])
         self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
-        self.assertTrue(any("re-centring failed (no_progress)" in m and "mono camera" in m
-                            for m in abort_on_pause.messages), abort_on_pause.messages)
-        self.assertLess(world.t, 12.0)
-        self.assertEqual(json.loads((self.dir / "session.json").read_text())["led_mode"], "luma")   # from 'auto'
 
-    def test_mono_latched_segment_is_stalled(self):
-        """Mono camera, latch tripped mid-segment: the next strong segment flashes without moving -> 'stalled' and
-        the low-battery pause (instead of an 'ok' segment with zero twist)."""
-        p = sim.SimParams(v_bat0=3.45, v_sag=0.12)
-        specs = [dataclasses.replace(S.drive(110, 110), recentre=False) for _ in range(2)]
-        world, printed = run_mono_session(self.dir, specs, p, (0.45, 0.5, 0.3), led_mode="luma")
-        segs = read_csv(self.dir / "segments.csv")
-        self.assertEqual(list(segs["status"]), ["ok", "stalled"])     # the 1st moved before the latch stopped it
-        self.assertEqual(int(segs["flash_live"][1]), 1)
-        self.assertTrue(world.fw[BOT].lowbat)
-        self.assertTrue(any("flashed but did not move" in m and "low-battery latch" in m
-                            for m in abort_on_pause.messages), abort_on_pause.messages)
+    def test_nudge_stops_at_the_fence(self):
+        """Six forward nudges from 10 cm before the wall, facing it: the fence stops them, not the wall."""
+        arena = Arena(0.0, 1.0, 0.0, 1.0, 0.08)
+        world, counts, text = self.run_keys([S.drive(80, 80)], ["w"] * 6 + ["x"], start=(0.9, 0.5, 0.0),
+                                            arena=arena)
+        self.assertIn("nudge_geofence", events(self.dir))
+        self.assertIn("nudge stopped: geofence", text)
+        self.assertGreater(wall_clearance(world, self.dir / "tracker.csv", arena), 0.02)
+        self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
 
-    def test_mono_sync_flash_still_detected(self):
-        """Luma mode keeps the sync-flash check (no 'missed' retries), with the red channel all NaN; a spin in
-        place is not 'stalled'."""
-        specs = [S.drive(80, 80, duration_s=1.0), S.drive(-90, 90, duration_s=1.0)]
-        world, printed = run_mono_session(self.dir, specs, sim.SimParams(ir_loss=0.0), (0.5, 0.5, 0.0),
-                                          led_mode="luma")
-        segs = read_csv(self.dir / "segments.csv")
-        self.assertEqual(list(segs["status"]), ["ok", "ok"])
-        self.assertEqual(list(segs["flash_live"]), [1, 1])
+    def test_hidden_marker_during_the_pause_does_not_prompt(self):
+        """A hand over the bot hides the marker while the operator handles it: the status line says so, no
+        'marker not visible' pause fires, and a nudge is refused; the segment waits for the marker as usual."""
+        def keys(ref):
+            mid = ref["w"].params[BOT].geometry.marker_id
+            hide = lambda: ref["w"].occluded.add(mid)
+            show = lambda: ref["w"].occluded.discard(mid)
+            return [hide] + [None] * 12 + ["w", show, None, None, None, "\r"]     # 12 polls = 0.6 s > marker_loss_s
+        world, counts, text = self.run_keys([S.drive(80, 80)], keys, start=(0.5, 0.5, 0.0))
+        self.assertIn("marker not visible", text)
+        self.assertFalse(abort_on_pause.messages)
+        self.assertIn("nudge_marker_loss", events(self.dir))             # the blind nudge sent nothing
+        self.assertNotIn("RECENTRE", list(read_csv(self.dir / "frames.csv")["op"]))
+        self.assertEqual(list(read_csv(self.dir / "segments.csv")["status"]), ["ok"])
 
 
 class TestExitPath(TempDirCase):
@@ -417,7 +319,7 @@ class TestExitPath(TempDirCase):
             with self.subTest(consume=consume):
                 out, h = self.dir / f"c{consume}", {}
                 with self.assertRaises(KeyboardInterrupt):                # not masked by a BridgeError
-                    run_session(out, [S.drive(90, 90, duration_s=3.0)], start=(0.5, 0.5, 0.0), write_dump=False,
+                    run_session(out, [S.drive(90, 90, duration_s=3.0)], start=(0.5, 0.5, 0.0),
                                 bridge_factory=self._serial_bridge(h, interrupt_at=20, consume=consume))
                 world, fake = h["world"], h["fake"]
                 world.csv = None                                          # closed by run_session
@@ -426,17 +328,17 @@ class TestExitPath(TempDirCase):
                 self.assertEqual([(f.op, f.bot_id) for f in last],
                                  [(P.OP_STOP, BOT), (P.OP_STOP, BOT), (P.OP_STOP, P.ADDR_BROADCAST)])
                 self.assertEqual(op_of(fake.sent[-4]), P.OP_DRIVE)        # the interrupted keep-alive
-                frames, ev = read_csv(out / "frames.csv"), read_csv(out / "events.csv")
+                frames = read_csv(out / "frames.csv")
                 self.assertEqual(list(frames["purpose"][-2:]), ["final", "final_broadcast"])
-                self.assertIn("final_stop_error", list(ev["event"]))
-                self.assertIn("abort", list(ev["event"]))
+                self.assertIn("final_stop_error", events(out))
+                self.assertIn("abort", events(out))
                 self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
                 self.assertIn("finished_wall", json.loads((out / "session.json").read_text()))
 
     @staticmethod
     def _failing_bridge(fails):
-        """SimBridge whose n-th STOP raises BridgeError when fails(n). One drive segment from home sends STOPs
-        1-2 pre_rest, 3-4 end, 5-6 final, 7 final broadcast."""
+        """SimBridge whose n-th STOP raises BridgeError when fails(n). One drive segment sends STOPs 1-2 pause,
+        3-4 pre_rest, 5-6 end, 7-8 final, 9 final broadcast."""
         def factory(world):
             b = sim.SimBridge(world)
             send, n = b.send, [0]
@@ -453,25 +355,25 @@ class TestExitPath(TempDirCase):
 
     def test_failed_final_stop_does_not_skip_the_rest(self):
         world, _ = run_session(self.dir, [S.drive(80, 80, duration_s=1.0)], start=(0.5, 0.5, 0.0),
-                               bridge_factory=self._failing_bridge(lambda n: n == 5))
-        frames, ev = read_csv(self.dir / "frames.csv"), read_csv(self.dir / "events.csv")
+                               bridge_factory=self._failing_bridge(lambda n: n == 7))
+        frames = read_csv(self.dir / "frames.csv")
         self.assertEqual(list(frames["purpose"][-2:]), ["final", "final_broadcast"])
-        self.assertEqual(list(ev["event"]).count("final_stop_error"), 1)
+        self.assertEqual(events(self.dir).count("final_stop_error"), 1)
 
     def test_no_final_stop_acknowledged_raises(self):
         with self.assertRaises(B.BridgeError):
             run_session(self.dir, [S.drive(80, 80, duration_s=1.0)], start=(0.5, 0.5, 0.0),
-                        bridge_factory=self._failing_bridge(lambda n: n >= 5))
-        self.assertEqual(list(read_csv(self.dir / "events.csv")["event"]).count("final_stop_error"), 3)
+                        bridge_factory=self._failing_bridge(lambda n: n >= 7))
+        self.assertEqual(events(self.dir).count("final_stop_error"), 3)
         self.assertIn("finished_wall", json.loads((self.dir / "session.json").read_text()))
 
 
 class TestSerialBridge(unittest.TestCase):
-    """SerialBridge against FakeBlasterSerial, which mirrors ir_blaster.ino's line protocol.
+    """SerialBridge against FakeBlasterSerial, which mirrors the blaster sketch's line protocol.
 
     The blaster side here is the Python model in simrig: these pin the PC side and the intended blaster behaviour.
-    ir_blaster.ino itself is covered just by compiling it (with the static_assert protocol vectors), so a change
-    to its line handling must be mirrored in FakeBlasterSerial by hand."""
+    bot_blaster.ino itself is covered by its hardware test (HARDWARE.md 4.5), so a change to its line handling
+    must be mirrored in FakeBlasterSerial by hand."""
 
     def setUp(self):
         self.world = sim.SimWorld({BOT: (sim.SimParams(ir_loss=0.0), (0.5, 0.5, 0.0))}, seed=0)
@@ -489,7 +391,7 @@ class TestSerialBridge(unittest.TestCase):
         self.assertTrue(br.info.startswith("I "))
         self.assertNotIn(seg, self.fake.sent)          # a bare newline used to complete the line and send the SEG
         self.world.advance(self.world.t + 0.1)
-        self.assertEqual(self.world.fw[BOT].log, [])   # the bot never started a segment
+        self.assertFalse(self.world.fw[BOT].seg_active)   # the bot never started a segment
         rec = br.send(P.pack(BOT, P.OP_STOP))
         self.assertEqual(rec.raw, P.pack(BOT, P.OP_STOP))
         br.resync()                                    # an idle resync (the exit path) sends nothing either
@@ -497,7 +399,7 @@ class TestSerialBridge(unittest.TestCase):
 
     def test_blaster_on_another_protocol_is_refused(self):
         self.fake = FakeBlasterSerial(self.world, proto=1)
-        with self.assertRaisesRegex(B.BridgeError, r"protocol 1\b.*Reflash ir_blaster"):
+        with self.assertRaisesRegex(B.BridgeError, r"protocol 1\b"):
             self.bridge()
         self.assertTrue(self.fake.closed)
         self.assertEqual(self.fake.sent, [])
@@ -512,7 +414,7 @@ class TestSerialBridge(unittest.TestCase):
         self.assertEqual(self.fake.timeout, 1.0)
 
     def test_overlong_line_is_dropped_whole(self):
-        """Exercises FakeBlasterSerial's copy of ir_blaster.ino's lineDrop rule (see the class docstring)."""
+        """Exercises FakeBlasterSerial's copy of the sketch's lineDrop rule (see the class docstring)."""
         br = self.bridge()
         n_sent = len(self.fake.sent)
         with self.assertRaisesRegex(B.BridgeError, "E long"):
@@ -545,6 +447,7 @@ class TestProtocolVersion(TempDirCase):
         self.register(bot_info_line())
         info = json.loads((self.dir / "bots" / f"{P.bot_id_from_usb_serial(SERIAL)}.json").read_text())
         self.assertEqual(info["proto"], str(P.PROTO_VERSION))
+        self.assertEqual(info["watchdog_ms"], "300")
 
     def test_run_checks_the_registered_protocol(self):
         from graspion_calib.__main__ import _check_proto
@@ -554,7 +457,7 @@ class TestProtocolVersion(TempDirCase):
             _check_proto(BOT, P.info_fields(bot_info_line(proto=1)), "bots/90.json")
 
 
-class TestScheduleSeed(TempDirCase):
+class TestScheduleCli(TempDirCase):
     def cli(self, *args):
         with contextlib.redirect_stdout(io.StringIO()):
             cli_main(list(args))
@@ -569,6 +472,7 @@ class TestScheduleSeed(TempDirCase):
         self.cli("schedule", "grid", "--blocks", "1", "--seed", str(ma["seed"]), "--out", str(c))
         self.assertEqual([(s.L, s.R) for s in S.load(c)], [(s.L, s.R) for s in sa])
         self.assertEqual(ma["kind"], "grid")
+        self.assertEqual(len(sa), 88)                                      # 80 cells + 8 reverse checks
 
     def test_watchdog_vs_period_check(self):
         from graspion_calib.__main__ import _check_watchdog
@@ -586,20 +490,38 @@ class TestScheduleSeed(TempDirCase):
         self.assertEqual(meta, {})
         self.assertEqual([(s.L, s.R) for s in loaded], [(s.L, s.R) for s in specs])
 
-    def test_validation_p_min(self):
-        fwd = self.dir / "forward_map.json"
-        sim.default_truth().save(fwd)
-        a, b = self.dir / "a.json", self.dir / "b.json"
-        self.cli("schedule", "validation", "--forward-map", str(fwd), "--seed", "1", "--out", str(a))
-        self.cli("schedule", "validation", "--forward-map", str(fwd), "--seed", "1", "--p-min", "80", "--out", str(b))
-        sa, (sb, mb) = S.load(a), S.load_with_meta(b)
-        self.assertTrue(sa)
-        self.assertTrue(all(min(s.L, s.R) >= 60 for s in sa))
-        self.assertTrue(all(min(s.L, s.R) >= 80 for s in sb))
-        self.assertLess(len(sb), len(sa))                                 # a smaller region: fewer feasible targets
-        self.assertEqual(mb["args"]["p_min"], [80.0])
-        with self.assertRaises(SystemExit):                               # p_min inside the dead zone
-            self.cli("schedule", "validation", "--forward-map", str(fwd), "--p-min", "40", "--out", str(b))
+    def test_cells_schedule(self):
+        out = self.dir / "cells.json"
+        self.cli("schedule", "cells", "--cells", "[[80, 80], [100, 60]]", "--out", str(out))
+        specs, meta = S.load_with_meta(out)
+        self.assertEqual([(s.L, s.R, s.block, s.tag) for s in specs], [(80, 80, 0, "cells"), (100, 60, 0, "cells")])
+        self.assertEqual(meta["kind"], "cells")
+        self.cli("schedule", "cells", "--cells", "[[80, 80], [100, 60]]", "--blocks", "2", "--out", str(out))
+        self.assertEqual([(s.L, s.R, s.block) for s in S.load(out)],
+                         [(80, 80, 0), (100, 60, 0), (80, 80, 1), (100, 60, 1)])      # given order, every block
+        for bad in (["--cells", "[[130, 0]]"], ["--cells", "[[80]]"], ["--cells", "[]"], []):
+            with self.assertRaises(SystemExit):
+                self.cli("schedule", "cells", *bad, "--out", str(out))
+
+    def test_parse_selection(self):
+        self.assertEqual(S.parse_selection("0-2,5", 8), [0, 1, 2, 5])
+        self.assertEqual(S.parse_selection("6-", 8), [6, 7])
+        self.assertEqual(S.parse_selection("3, 1,3", 8), [3, 1])                     # given order, each once
+        for bad in ("8", "2-1", "", "a", "-1"):
+            with self.assertRaises(ValueError):
+                S.parse_selection(bad, 8)
+
+    def test_run_only_in_the_simulator(self):
+        sched, out = self.dir / "cells.json", self.dir / "session"
+        self.cli("schedule", "cells", "--cells", "[[70, 70], [0, 80], [80, 0], [60, 60]]", "--out", str(sched))
+        self.cli("run", "--sim", "--bot", str(BOT), "--schedule", str(sched), "--out", str(out), "--only", "1-2,0")
+        self.assertEqual([(s.L, s.R) for s in S.load(out / "schedule.json")], [(0, 80), (80, 0), (70, 70)])
+        self.assertEqual(list(read_csv(out / "segments.csv")["status"]), ["ok"] * 3)
+        meta = json.loads((out / "session.json").read_text())
+        self.assertEqual(meta["only"], {"selection": "1-2,0", "indices": [1, 2, 0]})
+        self.assertNotIn("RECENTRE", list(read_csv(out / "frames.csv")["op"]))     # no operator, no nudges
+        with self.assertRaises(SystemExit):
+            self.cli("run", "--sim", "--bot", str(BOT), "--schedule", str(sched), "--out", str(out), "--only", "4")
 
 
 # references and a bot marker for the tracker CLI, rendered through a 1 m -> 640 px overhead view

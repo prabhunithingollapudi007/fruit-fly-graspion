@@ -1,4 +1,3 @@
-import re
 import unittest
 from pathlib import Path
 
@@ -111,11 +110,6 @@ class TestProtocol(unittest.TestCase):
             h = (h * 16777619) & 0xFFFFFFFF
         self.assertEqual(P.serial_hash([0, 0, 0, 0]), h)
 
-    def test_header_copies_identical(self):
-        a = (ROOT / "firmware/calib_bot/calib_protocol.h").read_bytes()
-        b = (ROOT / "blaster/ir_blaster/calib_protocol.h").read_bytes()
-        self.assertEqual(a, b, "calib_protocol.h copies differ")
-
     def test_vectors_up_to_date(self):
         text = P.vectors_header()
         for d in P.SKETCH_DIRS:
@@ -129,13 +123,6 @@ class TestProtocol(unittest.TestCase):
                           ("CALIB_ADDR_BROADCAST", P.ADDR_BROADCAST), ("CALIB_PROTO_VERSION", P.PROTO_VERSION)):
             line = next(ln for ln in h.splitlines() if ln.startswith(f"#define {name} "))
             self.assertEqual(int(line.split()[2], 0), val, name)
-
-    def test_dump_columns_match_firmware(self):
-        from graspion_calib.sim import SimFirmware
-        ino = (ROOT / "firmware/calib_bot/calib_bot.ino").read_text()
-        cols = SimFirmware.DUMP_COLUMNS
-        flat = re.sub(r'"\s*\n\s*"', "", ino)          # join adjacent C string literals
-        self.assertIn(cols, flat, "dump header in calib_bot.ino differs from sim/botlog")
 
 
 if __name__ == "__main__":

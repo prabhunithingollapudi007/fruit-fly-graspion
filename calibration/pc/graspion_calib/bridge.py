@@ -1,4 +1,4 @@
-"""PC side of the IR blaster (blaster/ir_blaster): one request line, one reply line.
+"""PC side of the IR blaster (bot_blaster/bot_blaster.ino): one request line, one reply line.
 
 All timestamps are host time.perf_counter() seconds (the same clock as the tracker). t_ack is taken when the
 blaster's "K ..." reply arrives, i.e. just after the frame has left the IR LED. The bot's IRremote receiver ends a
@@ -15,9 +15,9 @@ from typing import NamedTuple
 from .protocol import OP_NAMES, proto_error, unpack
 
 RECORD_GAP_S = 0.008             # IRremote 4.7.1 RECORD_GAP_MICROS: silence that ends a received frame
-PERIOD_MIN_MS = 100              # longest frame (85.7 ms) + RECORD_GAP_S + margin; ir_blaster.ino rejects less
+PERIOD_MIN_MS = 100              # longest frame (85.7 ms) + RECORD_GAP_S + margin; the blaster rejects less
 PERIOD_MAX_MS = 2000
-RESYNC = b"\x18\n"               # CAN: ir_blaster.ino drops the partial line unrun; the empty line gets no reply
+RESYNC = b"\x18\n"               # CAN: the blaster drops the partial line unrun; the empty line gets no reply
 
 
 def nec_frame_s(raw: int) -> float:
