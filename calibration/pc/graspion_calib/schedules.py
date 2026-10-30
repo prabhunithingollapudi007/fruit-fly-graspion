@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+DRIVE_MAX = 120                 # the firmware's cap (HARDWARE.md 4.4); the frame itself carries up to protocol.DRIVE_LIMIT
 GRID = (0, 55, 60, 70, 80, 90, 100, 110, 120)
 REVERSE = ((-90, -90), (-90, 90), (90, -90), (-60, -60), (-120, -120), (-90, 0), (0, -90), (-60, -80))
 
@@ -58,6 +59,12 @@ def static_grid(levels=GRID, reverse=REVERSE, blocks=5, drive_s=3.0, rest_s=0.8,
             L, R = cells[k]
             out.append(drive(L, R, drive_s, rest_s, blk, "grid" if (L >= 0 and R >= 0) else "reverse"))
     return out
+
+
+def cells(pairs, blocks=1, drive_s=3.0, rest_s=0.8):
+    """Chosen (L, R) cells in the given order, every block once more: trial runs, re-runs of single cells and the
+    few-shot subsets of a held-out bot. No shuffling: the operator sees what comes next."""
+    return [drive(L, R, drive_s, rest_s, blk, "cells") for blk in range(blocks) for L, R in pairs]
 
 
 def steps(pairs, hold_s=1.5, rest_s=0.8, block=0):
@@ -135,6 +142,25 @@ def load_with_meta(path):
 
 def load(path):
     return load_with_meta(path)[0]
+
+
+def parse_selection(text, n):
+    """Segment indices from "0-3,7,12-" (ranges inclusive, an open end runs to the last segment), in order, each
+    once. ValueError on anything else or an index outside 0..n-1."""
+    out = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        a, dash, b = part.partition("-")
+        lo = int(a)
+        hi = (n - 1 if b == "" else int(b)) if dash else lo
+        if not 0 <= lo <= hi < n:
+            raise ValueError(f"segment selection {part!r} outside 0..{n - 1}")
+        out.extend(k for k in range(lo, hi + 1) if k not in out)
+    if not out:
+        raise ValueError("empty segment selection")
+    return out
 
 
 def summary(specs, recentre_s=4.0):

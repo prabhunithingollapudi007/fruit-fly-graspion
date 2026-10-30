@@ -4,8 +4,9 @@
                   built with another IR protocol version)
   dump            download a bot's log ('d') to CSV (copy it into the session folder as bot_dump.csv)
   fleet-check     check bots/*.json for IR-ID collisions
-  schedule        write a schedule JSON (grid, steps, prbs, circles, ping, static, validation)
-  run             run a schedule on the rig (camera + blaster) or in the simulator (--sim)
+  schedule        write a schedule JSON (grid, cells, steps, prbs, circles, ping, static, validation)
+  run             run a schedule on the rig (camera + blaster) or in the simulator (--sim); --only picks
+                  segments, --recentre manual pauses before each one for the operator
   track           tracker only: live camera or a recorded video -> tracker CSV
   analyze         session folder(s) -> maps, polytope, lag, noise (report.py)
   camera-calib    ChArUco intrinsics -> .npz (or --make-board to print the board)
@@ -113,14 +114,22 @@ def cmd_fleet_check(a):
 
 def cmd_schedule(a):
     seed = S.new_seed() if a.seed is None else a.seed
+    blocks = a.blocks if a.blocks is not None else (1 if a.kind == "cells" else 5)
     if a.kind == "grid":
-        specs = S.static_grid(blocks=a.blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=seed)
+        specs = S.static_grid(blocks=blocks, drive_s=a.drive_s, rest_s=a.rest_s, seed=seed)
+    elif a.kind == "cells":
+        if not a.cells:
+            raise SystemExit('schedule cells needs --cells "[[L, R], ...]"')
+        pairs = json.loads(a.cells)
+        if not pairs or any(len(c) != 2 or max(abs(c[0]), abs(c[1])) > S.DRIVE_MAX for c in pairs):
+            raise SystemExit(f"--cells: a non-empty list of [L, R] pairs with |drive| <= {S.DRIVE_MAX}")
+        specs = S.cells(pairs, blocks=blocks, drive_s=a.drive_s, rest_s=a.rest_s)
     elif a.kind == "steps":
         specs = S.steps([((60, 60), (100, 100)), ((80, 0), (80, 80)), ((0, 80), (80, 80)), ((70, 90), (90, 70))],
                         hold_s=a.drive_s / 2)
     elif a.kind == "prbs":
         specs = S.prbs([(70, 70), (100, 100), (90, 60), (60, 90), (0, 90), (90, 0)], duration_s=a.drive_s,
-                       n_segments=a.blocks * 4, seed=seed)
+                       n_segments=blocks * 4, seed=seed)
     elif a.kind == "circles":
         specs = S.circles(json.loads(a.pairs or "[[100, 60], [60, 100]]"), duration_s=a.long_s)
     elif a.kind == "ping":
@@ -175,12 +184,20 @@ def _check_watchdog(bot, bot_info, period_ms, specs):
 def cmd_run(a):
     from .geometry import Arena
     from .poses import PoseStore, TrackerCSV
-    from .scheduler import RecentreConfig, Session, SessionConfig, SafetyConfig, console_pause
+    from .scheduler import RecentreConfig, Session, SessionConfig, SafetyConfig, console_getkey, console_pause
     specs, schedule_meta = S.load_with_meta(a.schedule)
+    extra = {"schedule_file": str(a.schedule), "schedule_meta": schedule_meta, "argv": sys.argv,
+             "recentre_mode": a.recentre}
+    if a.only:                                    # the session's schedule.json and seg numbers are the selection
+        try:
+            idx = S.parse_selection(a.only, len(specs))
+        except ValueError as e:
+            raise SystemExit(f"--only: {e}")
+        specs = [specs[k] for k in idx]
+        extra["only"] = {"selection": a.only, "indices": idx}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     S.save(specs, out / "schedule.json", schedule_meta)
-    extra = {"schedule_file": str(a.schedule), "schedule_meta": schedule_meta, "argv": sys.argv}
     led_mode, tracker, n_warn = "auto", None, 0
     if a.sim:
         from . import sim
@@ -191,6 +208,7 @@ def cmd_run(a):
         geom, arena = p.geometry, Arena(0.0, 1.0, 0.0, 1.0, 0.08)
         extra.update({"simulated": True, "pwm_hz": "sim"})
         on_pause = (lambda msg: (print("PAUSE (sim, aborting):", msg), "abort")[1])
+        getkey = (lambda: "\r")                   # no operator: every manual pause runs from where the bot is
         cam = None
     else:
         from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, BridgeError, SerialBridge
@@ -234,9 +252,11 @@ def cmd_run(a):
                       "ref_check": tracker.ref_check, "reference_summary": tracker.reference_summary(),
                       "tracker_warnings": [w for _, w in tracker.warnings[:n_warn]]})
         on_pause = console_pause
+        getkey = console_getkey() if a.recentre == "manual" else None
     cfg = SessionConfig(bot_id=a.bot, geometry=geom, arena=arena, out_dir=str(out), notes=a.notes or "",
-                        safety=SafetyConfig(), recentre=RecentreConfig(), led_mode=led_mode)
-    sess = Session(cfg, bridge, poses, clock, on_pause=on_pause, extra_meta=extra)
+                        safety=SafetyConfig(), recentre=RecentreConfig(), recentre_mode=a.recentre,
+                        led_mode=led_mode)
+    sess = Session(cfg, bridge, poses, clock, on_pause=on_pause, extra_meta=extra, getkey=getkey)
     try:
         counts = sess.run(specs)
         print("done:", counts)
@@ -332,13 +352,15 @@ def main(argv=None):
     p = sub.add_parser("fleet-check"); p.add_argument("--bots-dir", default="bots"); p.set_defaults(fn=cmd_fleet_check)
 
     p = sub.add_parser("schedule")
-    p.add_argument("kind", choices=["grid", "steps", "prbs", "circles", "ping", "static", "validation"])
+    p.add_argument("kind", choices=["grid", "cells", "steps", "prbs", "circles", "ping", "static", "validation"])
     p.add_argument("--out", required=True)
-    p.add_argument("--blocks", type=int, default=5)
+    p.add_argument("--blocks", type=int, help="randomised blocks (grid; prbs: 4 segments per block), or how many "
+                                              "times each cell runs (cells). Default 5, cells 1")
     p.add_argument("--drive-s", type=float, default=3.0)
     p.add_argument("--rest-s", type=float, default=0.8)
     p.add_argument("--long-s", type=float, default=60.0)
     p.add_argument("--pairs", help="JSON list of [L, R] for circles")
+    p.add_argument("--cells", help='cells: JSON list of [L, R] drive pairs, run in this order, e.g. "[[80, 80], [100, 60]]"')
     p.add_argument("--forward-map", help="forward_map.json (validation)")
     p.add_argument("--targets", help="JSON list of [v, omega] (validation)")
     p.add_argument("--p-min", type=float, nargs="+", metavar="DRIVE",
@@ -361,6 +383,11 @@ def main(argv=None):
     p.add_argument("--sim", action="store_true", help="simulated bot, rig and blaster (dry run)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--notes")
+    p.add_argument("--only", metavar="SEL", help='run these segments of the schedule only, e.g. "0-3,7,12-" '
+                                                 "(indices as in the schedule file, in the order given)")
+    p.add_argument("--recentre", choices=["auto", "manual"], default="auto",
+                   help="auto: the bang-bang law drives the bot home; manual: stop and pause before every segment, "
+                        "the operator places or nudges the bot (w/a/d, space) and presses Enter (x skips, q quits)")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("track")

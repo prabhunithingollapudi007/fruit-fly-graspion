@@ -20,8 +20,30 @@ def abort_on_pause(msg):
 abort_on_pause.messages = []
 
 
+class ScriptedKeys:
+    """getkey for the manual pause in tests: one item per poll, a key, None (nothing pressed) or a callable run at
+    that poll (the operator's hand, e.g. a teleport of the simulated bot). `items` may be a callable that builds
+    the list at the first poll, when the simulated world exists. An exhausted script fails the test instead of
+    letting the pause spin forever."""
+
+    def __init__(self, items):
+        self.items = items
+
+    def __call__(self):
+        if callable(self.items):
+            self.items = list(self.items())
+        if not self.items:
+            raise AssertionError("the manual pause polled for a key after the script ended")
+        k = self.items.pop(0)
+        if callable(k):
+            k()
+            return None
+        return k
+
+
 def run_session(out, specs, params=None, start=(0.45, 0.5, 0.3), arena=None, seed=0, bridge_factory=None,
-                on_pause=abort_on_pause, write_dump=True, geometry=None, safety=None, recentre=None):
+                on_pause=abort_on_pause, write_dump=True, geometry=None, safety=None, recentre=None,
+                recentre_mode="auto", getkey=None):
     """geometry: what the PC believes about the marker (default: the simulated bot's true geometry)."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -29,9 +51,11 @@ def run_session(out, specs, params=None, start=(0.45, 0.5, 0.3), arena=None, see
     world = sim.SimWorld({BOT: (p, start)}, seed=seed, tracker_csv=TrackerCSV(out / "tracker.csv"))
     bridge = (bridge_factory or sim.SimBridge)(world)
     cfg = SessionConfig(BOT, geometry or p.geometry, arena or Arena(0.0, 1.0, 0.0, 1.0, 0.08), str(out),
-                        safety=safety or SafetyConfig(), recentre=recentre or RecentreConfig())
-    sess = Session(cfg, bridge, world.poses, SimClock(world), on_pause=on_pause, extra_meta={"pwm_hz": "sim"})
+                        safety=safety or SafetyConfig(), recentre=recentre or RecentreConfig(),
+                        recentre_mode=recentre_mode)
     try:
+        sess = Session(cfg, bridge, world.poses, SimClock(world), on_pause=on_pause, extra_meta={"pwm_hz": "sim"},
+                       getkey=getkey)
         counts = sess.run(specs)
     finally:
         world.csv.close()

@@ -218,7 +218,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 ### 5.2 Protocol (UNTESTED design)
 
-**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (125 tests; 124 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
+**Implementation:** [calibration/README.md](calibration/README.md) implements this protocol and §5.3–5.4: calibration firmware, IR blaster, tracker, scheduler and fitting. It passes its offline suite on a simulated rig (134 tests; 133 run by default, and the EllipticalBot2D cross-check is skipped unless `GRASPION_TILEMAT_SIM` is set), but it is UNTESTED on hardware. Follow its run procedure; the steps below are the design it follows.
 
 **Recommended design: PC-driven segments over IR.** The PC starts each segment with an addressed IR frame, the bot flashes on receipt (this also measures link latency), and the PC re-centres the bot between segments. The alternative, an open-loop onboard schedule, loses more than 50 % of segments to walls in a ~1 m arena (ESTIMATE): 3 s segments travel 17–28 cm.
 

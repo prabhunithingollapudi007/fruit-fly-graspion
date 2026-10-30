@@ -22,6 +22,13 @@ segment that flashes but neither moves nor turns although a motor is driven at s
 'stalled', the low-battery pause, retried like 'lowbat'). Weaker segments between the latch and that point stay
 'ok' with no motion: drop them by hand (moved_m in segments.csv).
 
+Manual re-centring (SessionConfig.recentre_mode 'manual', `run --recentre manual`): instead of driving the bot home,
+the session stops the motors and pauses before every segment. The operator places the bot by hand or nudges it
+with the keys (short RECENTRE bursts through the same bridge, under the fence, marker-loss and red-flash stops),
+then presses Enter to run the segment from where the bot stands, x to skip it or q to end the session. Nothing
+waits for the marker during that pause (a hand over the bot hides it); the segment itself still does. For trial
+runs, single cells and a campaign whose automatic re-centring is not yet tuned.
+
 UNTESTED on the rig: exercised only against sim.SimWorld (tests/test_scheduler.py).
 """
 from __future__ import annotations
@@ -29,6 +36,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -95,6 +103,7 @@ class RecentreConfig:
     progress_s: float = 4.0            # ... within progress_s (e.g. swapped pivot pairs: the bot spins facing away)
     diverge_m: float = 0.03            # stop if the distance grows by this during one straight run (e.g. marker_yaw
                                        # off by pi: the bot drives straight away from home)
+    nudge_s: float = 0.6               # manual mode: one key press drives this long (a few cm), then STOP
 
 
 @dataclass
@@ -105,6 +114,7 @@ class SessionConfig:
     out_dir: str
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     recentre: RecentreConfig = field(default_factory=RecentreConfig)
+    recentre_mode: str = "auto"        # 'auto': bang-bang re-centring; 'manual': the operator pause (module doc)
     notes: str = ""
     led_mode: str = "auto"             # tracker.led_mode: 'chroma' (colour), 'luma' (mono: no red channel) or
                                        # 'auto' (from the first detection with a finite led_b: led_r NaN = mono)
@@ -128,10 +138,54 @@ def console_pause(msg: str) -> str:
     return "abort" if ans.startswith("a") else "continue"
 
 
+MANUAL_KEYS = "w/a/d (or arrows): nudge forward / pivot left / pivot right, space: stop, Enter: run, x: skip, q: quit"
+
+
+def console_getkey():
+    """A non-blocking key reader for the manual pause: the next key, or None when none is pressed. Arrow keys map
+    to w/a/d/s. Windows reads the console through msvcrt; elsewhere stdin is put into cbreak mode for each poll
+    only, so input() (the other pauses) still works between polls."""
+    try:
+        import msvcrt
+    except ImportError:
+        import select
+        import termios
+        import tty
+        arrows = {"A": "w", "D": "a", "C": "d", "B": "s"}          # ESC [ A/B/C/D
+
+        def getkey():
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setcbreak(fd)
+                if not select.select([sys.stdin], [], [], 0)[0]:
+                    return None
+                k = sys.stdin.read(1)
+                if k == "\x1b" and select.select([sys.stdin], [], [], 0.01)[0] and sys.stdin.read(1) == "[":
+                    return arrows.get(sys.stdin.read(1))
+                return k
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        return getkey
+    arrows = {"H": "w", "K": "a", "M": "d", "P": "s"}              # a 0x00 / 0xE0 prefix, then the scan code
+
+    def getkey():
+        if not msvcrt.kbhit():
+            return None
+        k = msvcrt.getwch()
+        return arrows.get(msvcrt.getwch()) if k in ("\x00", "\xe0") else k
+    return getkey
+
+
 class Session:
-    def __init__(self, cfg: SessionConfig, bridge, poses: PoseStore, clock, on_pause=console_pause, extra_meta=None):
+    def __init__(self, cfg: SessionConfig, bridge, poses: PoseStore, clock, on_pause=console_pause, extra_meta=None,
+                 getkey=None):
+        if cfg.recentre_mode not in ("auto", "manual"):
+            raise ValueError(f"recentre_mode {cfg.recentre_mode!r}: 'auto' or 'manual'")
+        if cfg.recentre_mode == "manual" and getkey is None:
+            raise ValueError("recentre_mode 'manual' needs a getkey reader (console_getkey())")
         self.cfg, self.bridge, self.poses, self.clock = cfg, bridge, poses, clock
-        self.on_pause = on_pause
+        self.on_pause, self.getkey = on_pause, getkey
         self.out = Path(cfg.out_dir)
         self.out.mkdir(parents=True, exist_ok=True)
         self.frames = FrameLog(self.out / "frames.csv")
@@ -142,7 +196,8 @@ class Session:
         self._ev_w = csv.writer(self._ev_f)
         self._ev_w.writerow(["t", "event", "detail"])
         self.meta = {"bot_id": cfg.bot_id, "geometry": asdict(cfg.geometry), "arena": asdict(cfg.arena),
-                     "safety": asdict(cfg.safety), "recentre": asdict(cfg.recentre), "notes": cfg.notes,
+                     "safety": asdict(cfg.safety), "recentre": asdict(cfg.recentre),
+                     "recentre_mode": cfg.recentre_mode, "notes": cfg.notes,
                      "started_wall": time.strftime("%Y-%m-%d %H:%M:%S"), "proto": P.PROTO_VERSION,
                      "bridge_info": getattr(bridge, "info", ""), "period_s": self.period_s(),
                      "geofence_lookahead_s": self.lookahead_s(), "led_mode": cfg.led_mode}
@@ -354,6 +409,74 @@ class Session:
         if self.on_pause(f"{why}. Charge or swap, reset the bot (or send 'r' over USB), then continue") == "abort":
             raise SessionAbort("low battery")
 
+    # ------------------------------------------------------------------ manual re-centring
+    def _manual_pause(self, seg, spec: SegmentSpec):
+        """The operator pause of recentre_mode 'manual' (module doc): motors off, a status line with the bot's
+        position, and the keys of MANUAL_KEYS. Returns "run" or "skip"; q raises SessionAbort. The marker may be
+        hidden meanwhile (a hand over the bot): the line says so and nothing prompts."""
+        self.stop(seg, "manual")
+        hx, hy = self.cfg.arena.centre
+        print(f"\n--- segment {seg}: ({spec.L}, {spec.R}) block {spec.block}, {spec.duration_s:g} s.  {MANUAL_KEYS}")
+        t_print = -math.inf
+        while True:
+            k = self.getkey()
+            if k in ("\r", "\n", "x", "q", "\x03"):          # msvcrt hands Ctrl-C over as a key
+                print()
+                if k in ("q", "\x03"):
+                    raise SessionAbort("operator quit")
+                return "skip" if k == "x" else "run"
+            if k in ("w", "a", "d"):
+                self._nudge(seg, k)
+                continue
+            if k in (" ", "s"):
+                self.stop(seg, "manual_stop")
+            now = self.clock.now()
+            if now - t_print >= 0.5:
+                t_print = now
+                pose = self.body_pose()
+                if pose is None or self.pose_age() > self.cfg.safety.marker_loss_s:
+                    where = "marker not visible"
+                else:
+                    _, x, y, th = pose
+                    where = (f"bot at ({x:.2f}, {y:.2f}) m, {100 * math.hypot(hx - x, hy - y):.0f} cm from home, "
+                             f"heading {math.degrees(th):.0f} deg")
+                print(f"\r    {where:72s}", end="", flush=True)
+            self.clock.sleep(0.05)
+
+    def _nudge(self, seg, key):
+        """One RECENTRE burst of nudge_s with the re-centring drive pair of the key (w: straight, a: pivot CCW,
+        d: pivot CW), then STOP. Ends early when the marker is lost, the predicted pose leaves the arena fence
+        while moving away from home, or a red flash answers (low battery: the usual pause)."""
+        rc, saf, arena = self.cfg.recentre, self.cfg.safety, self.cfg.arena
+        hx, hy = arena.centre
+        L, R = {"w": rc.straight, "a": rc.pivot_ccw, "d": rc.pivot_cw}[key]
+        t0 = self.clock.now()
+        _, base_r = self._led_baseline(t0)
+        result = "done"
+        while self.clock.now() < t0 + rc.nudge_s:
+            now = self.clock.now()
+            if self.pose_age() > saf.marker_loss_s:
+                result = "marker_loss"
+                break
+            t_pose, x, y, _ = self.body_pose()
+            vx, vy, _ = self.recent_rates()
+            h = self.lookahead_s() + max(0.0, now - t_pose)
+            px, py = x + vx * h, y + vy * h
+            if not arena.inside(px, py, min(rc.fence_m, arena.margin)) and math.hypot(hx - px, hy - py) > \
+                    math.hypot(hx - x, hy - y):
+                result = "geofence"
+                break
+            if not self._mono() and self._flash_seen(t0, now, base_r, "r"):
+                result = "lowbat"
+                break
+            self.send(P.OP_RECENTRE, L, R, seg, f"manual_{key}")
+        self.stop(seg, "manual_stop" if result == "done" else f"manual_{result}")
+        if result != "done":
+            self.event(f"manual_{result}", f"seg {seg} key {key}")
+            print(f"\r    nudge stopped: {result:60s}")
+        if result == "lowbat":
+            self._lowbat_pause(seg)
+
     # ------------------------------------------------------------------ one segment
     def _log_segment(self, i, attempt, spec: SegmentSpec, rec_seg, rec_end, status, flash, moved, pose0, n):
         x0, y0, th0 = pose0 if pose0 else (float("nan"),) * 3
@@ -463,9 +586,15 @@ class Session:
                     self.run_ping(i, spec)
                     continue
                 for attempt in range(self.cfg.safety.max_retries + 1):
-                    self.wait_for_marker()
-                    if spec.recentre:
-                        self._ensure_home(i)
+                    if spec.recentre and self.cfg.recentre_mode == "manual":
+                        if self._manual_pause(i, spec) == "skip":
+                            self.event("skipped", f"seg {i}")
+                            break
+                        self.wait_for_marker()
+                    else:
+                        self.wait_for_marker()
+                        if spec.recentre:
+                            self._ensure_home(i)
                     self.stop(i, "pre_rest")
                     self.clock.sleep(spec.rest_s)
                     status = self.run_drive(i, attempt, spec)

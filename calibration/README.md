@@ -11,11 +11,11 @@ Tooling to measure each GRASPion's map from motor drive (L, R) to body motion (u
 >   - Libraries: IRremote 4.7.1, Adafruit NeoPixel 1.15.5.
 >   - Both sketches include the protocol-2 `static_assert` vectors, so the C header and the Python mirror agree on ARM and AVR.
 >   - **Rebuilt 2026-10-27** with arduino-cli 1.5.1, graspion:samd **1.0.1** and IRremote 4.7.1: all four `calib_bot` variants build (60,236 / 60,516 / 60,372 / 60,108 B flash for default / `PWM_40KHZ` / `BENCH_HANG` / `USE_HW_WDT=0`; static RAM 752 + 21,428 = 22,180 B), and `ir_blaster` builds unchanged (Nano 8,608 B, QT Py M0 51,832 B). Sizes per toolchain are in HARDWARE.md §9.1.
-> - **125 offline tests** (run 2026-10-28 with Python 3.14.0, numpy 2.5.4, scipy 1.18.1, OpenCV 5.0.0): 124 pass, and 1 is skipped unless `GRASPION_TILEMAT_SIM` is set (§4). They cover:
+> - **134 offline tests** (run 2026-10-30 with Python 3.14.0, numpy 2.5.4, scipy 1.18.1, OpenCV 5.0.0): 133 pass, and 1 is skipped unless `GRASPION_TILEMAT_SIM` is set (§4). They cover:
 >   - protocol and CRC, including every on-air burst of up to 5 bits, cross-checked against the C header through compile-time `static_assert` vectors (compiled on ARM and AVR);
 >   - the twist/ICR fit on EllipticalBot2D trajectories. The skipped test is the one against the user's own `Ellipse2dObj.EllipticalBot2D`, imported read-only;
 >   - tracking on rendered scenes (including mono cameras, LED-height parallax, reference survey errors, a homography published only after its checks, and rate-limited "reference off" warnings), the `track` command (LED height and camera height from the rig config, reference summary, warnings) and ChArUco intrinsics on rendered views;
->   - every scheduler safety path (re-centring stops, the exit path after Ctrl-C, the serial bridge against a fake blaster), the refusal of a blaster or bot on another IR protocol version (fake blaster and fake bot serial ports; §3 build notes), a resync that drops a stale half-written request unrun, and the LED checks with NaN samples (including no LED sample before a SEG) and on mono cameras (warning, fallback to the bot's latch, `stalled`), against a simulated rig;
+>   - every scheduler safety path (re-centring stops, the exit path after Ctrl-C, the serial bridge against a fake blaster), the manual mode (Enter runs from where the bot stands, a nudge is RECENTRE frames ended by STOP and stops at the fence, a hidden marker prompts nothing, skip and quit, `schedule cells` and `run --only` through the CLI on the simulated rig), the refusal of a blaster or bot on another IR protocol version (fake blaster and fake bot serial ports; §3 build notes), a resync that drops a stale half-written request unrun, and the LED checks with NaN samples (including no LED sample before a SEG) and on mono cameras (warning, fallback to the bot's latch, `stalled`), against a simulated rig;
 >   - the firmware's frame handling, mirrored in `sim.py`. `test_firmware_sim.py` pins the watchdog-feed rules: PINGs do not feed it (a SEG followed by PINGs trips 300 ms after the SEG), RECENTRE does, a DRIVE without a segment stops and counts `drive_no_seg`, and a run of PINGs shares one log record that a SEG splits. `SimFirmware.i2c_ok = False` mirrors the I2C-down SEG refusal (red flash, no segment, no battery reads); it has no test yet;
 >   - these firmware and blaster tests run the Python models (`sim.SimFirmware`, `tests/simrig.FakeBlasterSerial`). The `.ino` code itself is covered only by compiling it with the `static_assert` vectors. The deadman, the hardware watchdog, the I2C time-outs and the bus recovery exist only in the firmware and have no offline test;
 >   - the simulated IR channel: per-frame NEC lengths (50–86 ms), each frame handled `RECORD_GAP_S` + 0.5 ms (8.5 ms) after it ends, both of two frames closer than 8 ms lost, and the 100–2000 ms period enforced by `SimBridge`;
@@ -40,8 +40,8 @@ calibration/
       bridge.py     blaster serial link, frames.csv log
       tracker.py    ArUco tracker, homography at marker height, sync-LED sampling
       intrinsics.py ChArUco camera calibration
-      scheduler.py  segment runner: re-centring, keep-alives, PC-side stops
-      schedules.py  grid / steps / PRBS / circles / ping / static / validation schedules
+      scheduler.py  segment runner: re-centring (automatic or manual), keep-alives, PC-side stops
+      schedules.py  grid / cells / steps / PRBS / circles / ping / static / validation schedules
       extract.py    session loading, flash-based time alignment, per-segment windows
       twist.py      per-segment body twist (u1, u2, ω) and ICR
       forward_map.py dead-zone power-law forward map, grouped CV, bootstrap
@@ -69,7 +69,7 @@ calibration/
 2. **Start:** it sends `SEG(L, R)`. The bot starts the motors and flashes its top NeoPixel blue at about 15 % for 70 ms.
 3. **Drive:** the PC sends `DRIVE(L, R)` keep-alives at the blaster period (110 ms by default; `bridge.period_ms` accepts 100–2000 ms), and level changes for step/PRBS segments.
 4. **Stop:** after the segment duration it sends STOP.
-5. **Re-centre:** between segments a bang-bang law (pivot, then straight) brings the bot back to the arena centre with `RECENTRE` frames, under its own stops (table below).
+5. **Re-centre:** between segments a bang-bang law (pivot, then straight) brings the bot back to the arena centre with `RECENTRE` frames, under its own stops (table below). With `run --recentre manual` the session instead stops and waits before every segment for the operator to place or nudge the bot and press Enter (§5 E).
 
 **Safety layers:**
 
@@ -228,7 +228,7 @@ arduino-cli compile --fqbn arduino:avr:nano calibration/blaster/ir_blaster
 
 All replies are non-blocking: they are written as the USB FIFO has room, one command at a time (the next command is read only after the previous reply has gone out). A terminal that stops reading cannot stall the firmware, and pending output is dropped when the port closes.
 
-The log holds 400 records in RAM and is lost when the bot loses power. A run of PINGs (link test) shares one record (`n_frames` = count, `t_start_ms`/`t_end_ms` = first/last PING). Clear it (`c`) after the bench checks and before every session, and dump it into the session folder after every session and every battery (§5 E).
+The log holds 400 records in RAM and is lost when the bot loses power. A run of PINGs (link test) shares one record (`n_frames` = count, `t_start_ms`/`t_end_ms` = first/last PING). Clear it (`c`) after the bench checks and before every session, and dump it into the session folder after every session and every battery (§5 F).
 
 ## 4. PC setup
 
@@ -242,7 +242,7 @@ Run the commands below from `calibration/pc`.
 python -m graspion_calib selftest
 ```
 
-`selftest` runs the offline suite (125 tests) in about 2 min. One test is skipped by default: it checks the twist fit against your own simulator class. To run it, set `GRASPION_TILEMAT_SIM=<tilemat_control_stack>/robots/elliptical_bot/controllers/mpc/acados_simple`. That environment needs a working matplotlib, because `Ellipse2dObj.py` imports it; otherwise the test stays skipped.
+`selftest` runs the offline suite (134 tests) in about 2 min. One test is skipped by default: it checks the twist fit against your own simulator class. To run it, set `GRASPION_TILEMAT_SIM=<tilemat_control_stack>/robots/elliptical_bot/controllers/mpc/acados_simple`. That environment needs a working matplotlib, because `Ellipse2dObj.py` imports it; otherwise the test stays skipped.
 
 A dry run of the whole loop on the simulated rig:
 
@@ -337,7 +337,20 @@ python -m graspion_calib camera-calib --images views/ --square-m <measured> --ou
 - blaster port and period;
 - per-bot geometry, including `led_height` (§2).
 
-**E. Static map:**
+**E. Trial runs and manual mode.** Before the first full grid, run single cells with yourself as the re-centring loop:
+```bash
+python -m graspion_calib schedule cells --cells "[[80, 80], [0, 90], [90, 0]]" --out sessions/trial.json
+```
+```bash
+python -m graspion_calib run --rig rig.json --bot 90 --schedule sessions/trial.json --out sessions/bot90_trial --recentre manual
+```
+- `schedule cells` runs the listed (L, R) pairs in the given order, `--blocks N` times each (default 1), with the grid's drive and rest times and the tag `cells`. The session is logged and analysed like any other, so trial cells can go into the same `analyze` call as a grid, or be kept apart.
+- `--recentre manual` replaces the bang-bang re-centring. Before every segment the session sends STOP and waits, showing the bot's position, its distance from the arena centre and its heading. Place the bot by hand, or nudge it with `w` / `a` / `d` (or the arrow keys): each key press is one `RECENTRE` burst of `RecentreConfig.nudge_s` (0.6 s) with the re-centring drive pairs (`straight`, `pivot_ccw`, `pivot_cw`), ended by STOP and cut short by marker loss, by the arena fence while the bot moves away from home, or by a red flash (then the low-battery pause). `Enter` runs the segment from where the bot stands, under the segment's usual geofence and marker-loss stops; `x` skips it (event `skipped`, nothing logged in `segments.csv`); `q` ends the session (the final STOPs go out as always); `space` sends an extra STOP. The marker may be hidden during the pause (your hand): the status line says "marker not visible", nothing prompts, a nudge is refused, and the segment waits for the marker before it starts.
+- `--only "0-3,7,12-"` runs a selection of a schedule's segments (indices as in the schedule file, in the order given), e.g. one cell of a grid again. The session's `schedule.json` and its segment numbers are the selection; `session.json` → `only` records it.
+- The bot's command watchdog covers manual mode like everything else: a nudge is frames at the blaster period followed by STOP, and nothing drives while you hold the bot. The keys are read from the console without Enter (`msvcrt` on Windows, cbreak mode elsewhere); `--sim` has no operator and runs every segment at once.
+- Count on more time than `schedule`'s estimate, which assumes about 4 s of automatic re-centring per segment: every pause is a handling point, so a full grid run by hand takes roughly twice as long. The same mode runs the few-cell subsets of a held-out bot.
+
+**F. Static map:**
 ```bash
 python -m graspion_calib schedule grid --blocks 5 --out sessions/grid.json
 ```
@@ -354,11 +367,11 @@ python -m graspion_calib run --rig rig.json --bot 90 --schedule sessions/grid.js
 - The analysis tolerates leftover records, an earlier session in the same dump, a missed first SEG and a bot reset mid-session. It warns when fewer than 80 % of SEGs match (`calib.json` → `bot_log_merge[].warning` and `warnings`). It leaves an ambiguous alignment unmatched, e.g. the same schedule with identical timing twice in one dump.
 - To continue on a new battery, split the schedule's `segments` list; one folder per battery is fine, because `analyze` pools folders.
 
-**F. Dynamics:** `schedule steps` and `schedule prbs` (switching every 0.1–0.5 s).
+**G. Dynamics:** `schedule steps` and `schedule prbs` (switching every 0.1–0.5 s).
 
-**G. Noise:** `schedule circles --pairs "[[100,60],[60,100]]" --long-s 60` gives CW and CCW circles of R ≈ 5–15 cm. Pick pairs from the static map.
+**H. Noise:** `schedule circles --pairs "[[100,60],[60,100]]" --long-s 60` gives CW and CCW circles of R ≈ 5–15 cm. Pick pairs from the static map.
 
-**H. Validation:**
+**I. Validation:**
 ```bash
 python -m graspion_calib schedule validation --forward-map analysis/bot90/forward_map.json --out sessions/val.json
 ```
@@ -467,7 +480,7 @@ Status values: `ok`, `missed` (no flash and no motion: the SEG was lost; retried
 
 ## 8. Known limitations and open items
 
-- **UNTESTED on hardware:** firmware, blaster, IR link rate and range, tracker with a real camera, re-centring gains, PWM 40 kHz snippet, hardware watchdog clocking, the SysTick deadman, the WDT early warning, its immediate reset and `rcause`, the quick-boot flag, the I2C time-out, bus recovery and its once-per-second retry, the blaster's CAN line-cancel, AVR battery byte meaning, MLX90393 register settings, NeoPixel timing next to IR receive.
+- **UNTESTED on hardware:** firmware, blaster, IR link rate and range, tracker with a real camera, re-centring gains, the manual mode's console key reader and nudges, PWM 40 kHz snippet, hardware watchdog clocking, the SysTick deadman, the WDT early warning, its immediate reset and `rcause`, the quick-boot flag, the I2C time-out, bus recovery and its once-per-second retry, the blaster's CAN line-cancel, AVR battery byte meaning, MLX90393 register settings, NeoPixel timing next to IR receive.
 - **Offline tests model the C code.** The firmware and blaster tests run Python copies of their logic (`sim.SimFirmware`, `tests/simrig.FakeBlasterSerial`); `calib_bot.ino` and `ir_blaster.ino` are covered only by compiling them with the `static_assert` protocol vectors. A change to either sketch must be mirrored in those models by hand. The deadman, the hardware watchdog, the I2C guard and the bot's USB replies have no offline test, and `SimFirmware.i2c_ok` has no test yet.
 - **WDT early warning priority:** its handler runs at NVIC priority 0, which USB (TinyUSB), IRremote's TC3 and any IRQ left at its reset default share, and the M0+ never preempts at equal priority. An ISR stuck there (or in `Dummy_Handler`) blocks the early warning and the SysTick deadman: EN can stay HIGH until the WDT time-out at ~1 s (0.86–1.28 s), and that reset sets no quick-boot flag. Lowering those IRQs is untested with TinyUSB and IRremote, so it is left as is.
 - **Bootloader:** a QT Py UF2 bootloader ≥ 3.11 drives EN HIGH with D2/D3 floating whenever it runs. The firmware shortens only resets at the WDT early warning and after a HardFault (quick-boot flag); uploads, double-tap recovery, a WDT time-out and other resets keep the full EN-HIGH window. Fix: flash a GRASPion build of uf2-samdx1 without `BOARD_NEOPIXEL_POWERPIN`. That is a bootloader rebuild outside this repository (not done). Which bootloader the bots carry is UNKNOWN (§5 B.9).
@@ -481,7 +494,7 @@ Status values: `ok`, `missed` (no flash and no motion: the SEG was lost; retried
   - The stall check runs on mono cameras only. On a colour camera, a strong segment that flashes but does not move (e.g. a motor or EN fault) is still logged `ok`.
   - The reference survey check catches gross errors only.
   - Tracker warnings raised after the homography fit (e.g. a bumped reference) are printed when `run` exits, but only those from the fit are stored in `session.json` (`tracker_warnings`).
-- Without a bot log, a bot that stopped before the twist window starts (0.5 s after the SEG) does not look like a visible stop. Dump the log after every session (§5 E).
+- Without a bot log, a bot that stopped before the twist window starts (0.5 s after the SEG) does not look like a visible stop. Dump the log after every session (§5 F).
 - The bot log lives in RAM and is lost on power loss. Persisting it to the 2 MB SPI flash is a possible follow-up.
 - The scheduler drives one bot at a time. A shared IR channel divides the frame rate by N.
 - Magnetometer axes relative to the body are UNKNOWN (HARDWARE.md §4.6); the log stores raw sensor axes in µT.

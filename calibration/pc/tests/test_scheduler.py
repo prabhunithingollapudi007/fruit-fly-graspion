@@ -24,7 +24,8 @@ from graspion_calib.geometry import Arena
 from graspion_calib.poses import Detection, PoseStore, TrackerCSV
 from graspion_calib.scheduler import RecentreConfig, SafetyConfig, Session, SessionConfig
 
-from .simrig import BOT, SERIAL, FakeBlasterSerial, FakeBotSerial, abort_on_pause, bot_info_line, run_session
+from .simrig import (BOT, SERIAL, FakeBlasterSerial, FakeBotSerial, ScriptedKeys, abort_on_pause, bot_info_line,
+                     run_session)
 
 
 def op_of(raw):
@@ -243,6 +244,109 @@ class TestRecentreSafety(TempDirCase):
         self.assertTrue(any("low battery" in m for m in abort_on_pause.messages))
         self.assertFalse(any("re-centring failed" in m for m in abort_on_pause.messages))
         self.assertLess(world.t, 8.0)
+
+
+class TestManualMode(TempDirCase):
+    """recentre_mode 'manual': the operator places or nudges the bot and starts each segment (README 5 E)."""
+
+    def run_manual(self, specs, keys, start=(0.3, 0.3, 0.5), **kw):
+        world_ref, printed = {}, io.StringIO()
+
+        def bridge(world):
+            world_ref["w"] = world
+            return sim.SimBridge(world)
+        with contextlib.redirect_stdout(printed):
+            world, counts = run_session(self.dir, specs, start=start, recentre_mode="manual",
+                                        getkey=ScriptedKeys((lambda: keys(world_ref)) if callable(keys) else keys),
+                                        bridge_factory=bridge, **kw)
+        return world, counts, printed.getvalue()
+
+    def events(self, out=None):
+        """Event names of a session (read_csv gives {} for a session with no event at all)."""
+        return list(read_csv((out or self.dir) / "events.csv").get("event", []))
+
+    def test_enter_runs_from_where_the_bot_stands(self):
+        world, counts, text = self.run_manual([S.drive(80, 80)], [None, None, "\r"])
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertEqual(list(segs["status"]), ["ok"])
+        self.assertNotIn("recentred", self.events())                 # no automatic re-centring ...
+        self.assertNotIn("RECENTRE", list(frames["op"]))                 # ... and no RECENTRE frame at all
+        self.assertLess(math.hypot(segs["x0"][0] - 0.3, segs["y0"][0] - 0.3), 0.03)   # started where it stood
+        self.assertIn("cm from home", text)
+        self.assertEqual(frames["purpose"][0], "manual")                 # motors off while the operator handles it
+        self.assertFalse(abort_on_pause.messages)
+
+    def test_nudges_then_hand_placement(self):
+        after_nudge = []
+
+        def keys(ref):
+            def record():
+                pl = ref["w"].plants[BOT]
+                after_nudge.append((pl.x, pl.y))
+
+            def place():                                                 # the operator sets the bot at home
+                pl = ref["w"].plants[BOT]
+                pl.x, pl.y, pl.th = 0.5, 0.5, 0.0
+            return ["w", record, "a", "d", place, None, None, "\r"]
+        world, counts, text = self.run_manual([S.drive(80, 80)], keys)
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertGreater(math.hypot(after_nudge[0][0] - 0.3, after_nudge[0][1] - 0.3), 0.015)  # the nudge moved it
+        rc = [(int(frames["L"][k]), int(frames["R"][k])) for k in range(len(frames["op"])) if frames["op"][k] == "RECENTRE"]
+        self.assertEqual(sorted(set(rc)), [(0, 90), (85, 85), (90, 0)])  # the re-centring drive pairs, nothing else
+        self.assertGreaterEqual(rc.count((85, 85)), 4)                   # 0.6 s at the 110 ms period
+        purposes = list(frames["purpose"])
+        self.assertIn("manual_w", purposes)
+        self.assertEqual(purposes[purposes.index("manual_w") + rc.count((85, 85))], "manual_stop")  # STOP ends it
+        self.assertEqual(list(segs["status"]), ["ok"])
+        self.assertLess(math.hypot(segs["x0"][0] - 0.5, segs["y0"][0] - 0.5), 0.03)   # ran from the placed pose
+        self.assertFalse({e for e in self.events() if e.startswith("manual_")})        # no nudge was cut short
+        self.assertEqual(world.fw[BOT].stats["wd_trips"], 0)
+        self.assertEqual(world.fw[BOT].stats["drive_no_seg"], 0)
+
+    def test_skip_and_quit(self):
+        specs = [S.drive(80, 80, duration_s=1.0) for _ in range(3)]
+        world, counts, text = self.run_manual(specs, ["x", "\r", "q"], start=(0.5, 0.5, 0.0))
+        segs, frames = (read_csv(self.dir / f) for f in ("segments.csv", "frames.csv"))
+        self.assertEqual(list(segs["seg"]), [1])                        # only the second segment ran
+        self.assertEqual(list(segs["status"]), ["ok"])
+        events = self.events()
+        self.assertEqual(events.count("skipped"), 1)
+        self.assertIn("abort", events)
+        self.assertEqual(counts["skipped"], 1)
+        self.assertEqual(list(frames["purpose"][-2:]), ["final", "final_broadcast"])
+        self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
+
+    def test_nudge_stops_at_the_fence(self):
+        """Six forward nudges from 10 cm before the wall, facing it: the fence stops them, not the wall."""
+        arena = Arena(0.0, 1.0, 0.0, 1.0, 0.08)
+        world, counts, text = self.run_manual([S.drive(80, 80)], ["w"] * 6 + ["x"], start=(0.9, 0.5, 0.0),
+                                              arena=arena)
+        self.assertIn("manual_geofence", self.events())
+        self.assertIn("nudge stopped: geofence", text)
+        self.assertGreater(wall_clearance(world, self.dir / "tracker.csv", arena), 0.02)
+        self.assertEqual((world.fw[BOT].L, world.fw[BOT].R), (0, 0))
+
+    def test_hidden_marker_during_the_pause_does_not_prompt(self):
+        """A hand over the bot hides the marker while the operator handles it: the status line says so, no
+        'marker not visible' pause fires, and a nudge is refused; the segment waits for the marker as usual."""
+        def keys(ref):
+            mid = ref["w"].params[BOT].geometry.marker_id
+            hide = lambda: ref["w"].occluded.add(mid)
+            show = lambda: ref["w"].occluded.discard(mid)
+            return [hide] + [None] * 12 + ["w", show, None, None, None, "\r"]     # 12 polls = 0.6 s > marker_loss_s
+        world, counts, text = self.run_manual([S.drive(80, 80)], keys, start=(0.5, 0.5, 0.0))
+        self.assertIn("marker not visible", text)
+        self.assertFalse(abort_on_pause.messages)
+        self.assertIn("manual_marker_loss", self.events())                          # the blind nudge sent nothing
+        frames = read_csv(self.dir / "frames.csv")
+        self.assertNotIn("RECENTRE", list(frames["op"]))
+        self.assertEqual(list(read_csv(self.dir / "segments.csv")["status"]), ["ok"])
+
+    def test_manual_needs_a_key_reader(self):
+        with self.assertRaises(ValueError):
+            run_session(self.dir, [], recentre_mode="manual")
+        with self.assertRaises(ValueError):
+            run_session(self.dir, [], recentre_mode="hands")
 
 
 class MonoPoseStore(PoseStore):
@@ -585,6 +689,41 @@ class TestScheduleSeed(TempDirCase):
         loaded, meta = S.load_with_meta(p)
         self.assertEqual(meta, {})
         self.assertEqual([(s.L, s.R) for s in loaded], [(s.L, s.R) for s in specs])
+
+    def test_cells_schedule(self):
+        out = self.dir / "cells.json"
+        self.cli("schedule", "cells", "--cells", "[[80, 80], [100, 60]]", "--out", str(out))
+        specs, meta = S.load_with_meta(out)
+        self.assertEqual([(s.L, s.R, s.block, s.tag) for s in specs], [(80, 80, 0, "cells"), (100, 60, 0, "cells")])
+        self.assertEqual(meta["kind"], "cells")
+        self.cli("schedule", "cells", "--cells", "[[80, 80], [100, 60]]", "--blocks", "2", "--out", str(out))
+        self.assertEqual([(s.L, s.R, s.block) for s in S.load(out)],
+                         [(80, 80, 0), (100, 60, 0), (80, 80, 1), (100, 60, 1)])      # given order, every block
+        for bad in (["--cells", "[[130, 0]]"], ["--cells", "[[80]]"], ["--cells", "[]"], []):
+            with self.assertRaises(SystemExit):
+                self.cli("schedule", "cells", *bad, "--out", str(out))
+
+    def test_parse_selection(self):
+        self.assertEqual(S.parse_selection("0-2,5", 8), [0, 1, 2, 5])
+        self.assertEqual(S.parse_selection("6-", 8), [6, 7])
+        self.assertEqual(S.parse_selection("3, 1,3", 8), [3, 1])                     # given order, each once
+        for bad in ("8", "2-1", "", "a", "-1"):
+            with self.assertRaises(ValueError):
+                S.parse_selection(bad, 8)
+
+    def test_run_only_and_manual_in_the_simulator(self):
+        sched, out = self.dir / "cells.json", self.dir / "session"
+        self.cli("schedule", "cells", "--cells", "[[70, 70], [0, 80], [80, 0], [60, 60]]", "--out", str(sched))
+        self.cli("run", "--sim", "--bot", str(BOT), "--schedule", str(sched), "--out", str(out),
+                 "--only", "1-2,0", "--recentre", "manual")
+        self.assertEqual([(s.L, s.R) for s in S.load(out / "schedule.json")], [(0, 80), (80, 0), (70, 70)])
+        self.assertEqual(list(read_csv(out / "segments.csv")["status"]), ["ok"] * 3)
+        meta = json.loads((out / "session.json").read_text())
+        self.assertEqual(meta["only"], {"selection": "1-2,0", "indices": [1, 2, 0]})
+        self.assertEqual(meta["recentre_mode"], "manual")
+        self.assertNotIn("recentred", list(read_csv(out / "events.csv").get("event", [])))
+        with self.assertRaises(SystemExit):
+            self.cli("run", "--sim", "--bot", str(BOT), "--schedule", str(sched), "--out", str(out), "--only", "4")
 
     def test_validation_p_min(self):
         fwd = self.dir / "forward_map.json"
