@@ -6,7 +6,7 @@ Measure, per bot, how motor drive (L, R) becomes body motion (u₁, u₂, ω). O
 
 ## The first table
 
-What you need: one bot flashed with `calib_bot`, a second body flashed with [bot_blaster](../bot_blaster/bot_blaster.ino) (verified as an IR remote on 2026-10-16) mounted upside down above the arena, a colour webcam looking straight down (30 fps is enough for the static map), four or five printed ArUco `DICT_4X4_50` markers (IDs 0–4) glued to spacers at the height of the bot's marker, one marker (another ID, 20–22 mm) on a cap on the bot with its top edge towards the front and the top NeoPixel left uncovered, and this repository's `.venv`. Run the commands from `calibration/pc`.
+What you need: one bot flashed with `calib_bot`, a second body flashed with [bot_blaster](../bot_blaster/bot_blaster.ino) (verified as an IR remote on 2026-10-16) mounted upside down above the arena, a camera looking straight down (a colour webcam at 30 fps is enough for the static map; the lab's camera is a mono Basler, see [This rig's camera](#this-rigs-camera)), four or five printed ArUco `DICT_4X4_50` markers (IDs 0–4; `python markers/make_markers.py` from the repo root prints them as a vector A4 PDF, 50 mm, IDs 0–3 plus spares 4–5) glued to spacers at the height of the bot's marker, one marker (another ID, 20–22 mm) on a cap on the bot with its top edge towards the front and the top NeoPixel left uncovered, and this repository's `.venv`. Run the commands from `calibration/pc`.
 
 1. **Flash.** Press the bot's power button, then
    ```bash
@@ -25,7 +25,7 @@ What you need: one bot flashed with `calib_bot`, a second body flashed with [bot
    python ../../bot_blaster/teleop.py --port COM5 --id <id>
    ```
    `w` must move it, `a` must turn it left (counter-clockwise seen from above: right motor only), and it must stop within about 0.3 s after `q`. If `a` turns it right, note it: the motor identity in HARDWARE.md §4.4 is INFERRED, and `NudgeConfig` in `scheduler.py` has to be swapped.
-3. **Rig.** Survey the reference markers' centres in metres in a right-handed frame seen from above (x right, y up); the tracker refuses a mirrored layout. Copy `pc/configs/rig_example.json` to `rig.json` and fill in the references, the arena box, the camera (index, size, fps), the blaster port, and for the bot its `marker_id`, `marker_offset`, `marker_yaw` (0 for a marker glued top-edge-forward) and `led_offset`. Check it:
+3. **Rig.** Survey the reference markers' centres in metres in a right-handed frame seen from above (x right, y up); the tracker refuses a mirrored layout. Copy `pc/configs/rig_example.json` to `rig.json` and fill in the references, the arena box, the camera (index, size, fps, `camera_height_m`), the blaster port, and for the bot its `marker_id`, `marker_offset`, `marker_yaw` (0 for a marker glued top-edge-forward) and `led_offset`. Check it:
    ```bash
    python -m graspion_calib track --rig rig.json --out check.csv --seconds 20
    ```
@@ -64,6 +64,33 @@ What you need: one bot flashed with `calib_bot`, a second body flashed with [bot
    `forward_map.json` is the fitted map; in `calib.json` look at `latency` (`found` / `sent`: the sync flash was seen), `replicate_scatter` (segment-to-segment noise per cell), `forward_map.meta.cv` (does the dead-zone power law beat its variants, and by how much), `polarity_check` (do reversed drives behave like forward ones) and `inverse_map` (the feasible region).
 
 **Not now.** Camera intrinsics (four surveyed references give the homography; distortion costs millimetres), automatic re-centring, lag and dead time (step and PRBS segments), long circles for heading diffusion, the bot's own log with battery and magnetometer readings, the C header of the inverse map, the fleet analysis in `calibration_paper/popsim.py`. Each comes back when a measured table asks for it.
+
+## This rig's camera
+
+Model numbers from the lab; specs from Basler's product pages (read 2026-11-04).
+
+| Part | Specs |
+|---|---|
+| Camera | Basler ace U **acA3088-57um**: Sony IMX178, 3088 × 2064 px, 2.4 µm pixels, sensor 7.41 × 4.95 mm (1/1.8"), **mono**, **rolling shutter**, 59 fps at full resolution, 10/12 bit, USB 3.0, C-mount |
+| Lens | Ricoh **FL-CC1614-2M**: 16 mm, F1.4, for 2/3" sensors (covers the 1/1.8" sensor), C-mount, minimum working distance 250 mm |
+
+View against camera height H above the marker plane (thin lens, field ≈ 0.463 H × 0.309 H; computed, not measured):
+
+| H | field of view | px/mm | 20 mm cap marker | 50 mm reference |
+|---|---|---|---|---|
+| 2.0 m | 93 × 62 cm | 3.3 | 67 px | 167 px |
+| 3.0 m | 139 × 93 cm | 2.2 | 44 px | 111 px |
+| 3.6 m | 167 × 111 cm | 1.85 | 37 px | 93 px |
+| 4.1 m | 190 × 127 cm | 1.63 | 33 px | 81 px |
+
+- **Height.** The short side of the image sets it: a 1 m arena plus the reference markers needs **H ≥ 3.6 m**. The lab's earlier blob-tracking script used 16.26 px/cm (1.63 px/mm), which matches this camera at full resolution from H ≈ 4.1 m (INFERRED: assumes its video was not resized).
+- **Full resolution, no binning.** 2 × 2 binning halves px/mm and leaves a 20 mm cap marker at about 3 px per marker cell, where a simulated detection test (blur and noise, the tracker's detector) lost 7–20 % of frames; at full resolution the cap has 5–6 px per cell. A narrower region of interest does not raise the frame rate, since the arena needs all 2064 rows (INFERRED for a rolling-shutter sensor). Plan on 59 fps.
+- **Exposure ≤ 2 ms**, set in pylon Viewer and saved as the camera's startup user set; `rig_example.json` leaves `camera.exposure` null so the tracker does not touch it. F1.4 leaves room to stop down to f/2.8–4.
+- **Mono.** The tracker detects it and logs the LED patch brightness instead of blue chroma (`led_mode` "luma", `led_r` NaN); the sync flash still shows as a brightness rise. Check that rise in `tracker.csv`.
+- **940 nm filter.** Basler's mono models have no IR-cut filter (INFERRED), so the blaster's reflections can flicker in the images. Fit a 940 nm-blocking filter to the lens; check the lens's filter thread before ordering.
+- **Lens resolution.** "-2M" marks a 2-megapixel lens (INFERRED from the name), so the optics blur over more than one 2.4 µm pixel; harmless for markers of 30 px and more.
+- **Rolling shutter** (INFERRED, UNTESTED). Rows are exposed up to one readout apart, at most about 1/59 s ≈ 17 ms top to bottom, while the tracker stamps a frame with one time. The bot's flash and its marker lie in the same rows, so the offset is common to both; a twist is fitted over a few centimetres of path, under 1 ms of row offset. `cam_offset` scatters by up to 17 ms with the bot's row, and the PC's marker-loss and geofence stops see up to 17 ms more latency, within `cam_latency_s` (0.05 s).
+- **Live capture.** `open_camera` opens a UVC camera through OpenCV's DirectShow backend. A Basler USB3 camera is a USB3 Vision device, not UVC, and needs Basler's pylon software. OpenCV may open it through pylon's DirectShow driver (UNTESTED; exposure units are then unknown, which is why exposure is set in pylon Viewer). There is no pypylon backend here yet. `track --video` on a pylon Viewer recording works either way.
 
 ## How it works
 

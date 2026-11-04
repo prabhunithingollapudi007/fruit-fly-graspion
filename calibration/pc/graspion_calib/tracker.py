@@ -303,7 +303,9 @@ class Tracker:
 
 
 def open_camera(index=0, width=1280, height=720, fps=60, exposure=None, backend=None):
-    """UVC camera with fixed settings. Exposure values are driver-specific (DirectShow: log2 seconds, e.g. -9)."""
+    """UVC camera with fixed settings. Exposure values are driver-specific (DirectShow: log2 seconds, e.g. -9).
+    A Basler USB3 Vision camera (the lab's acA3088-57um) is not UVC: it opens here only through pylon's DirectShow
+    driver (UNTESTED); set its exposure in pylon Viewer and pass exposure=None."""
     be = backend if backend is not None else (cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY)
     cap = cv2.VideoCapture(index, be)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
