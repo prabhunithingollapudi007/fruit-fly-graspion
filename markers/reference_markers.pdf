@@ -1,0 +1,89 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.276 841.890] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3181 >>
+stream
+0 g BT /F1 14 Tf 42.520 799.370 Td (GRASPion calibration: reference markers \(DICT_4X4_50, 50 mm\)) Tj ET
+0 g BT /F1 9 Tf 42.520 779.528 Td (Print at 100 % / Actual size. A few % of printer scaling does no harm: the tracker uses the) Tj ET
+0 g BT /F1 9 Tf 42.520 766.772 Td (centres you survey, and the printed size only feeds a 10 % sanity check \(reference_size_m\).) Tj ET
+0 g BT /F1 9 Tf 42.520 754.016 Td (Cut on the dashed line, keeping the white border. Glue each flat on a spacer, its face level) Tj ET
+0 g BT /F1 9 Tf 42.520 741.260 Td (with the bot-cap markers. Put it in the corner named below, as the camera sees the arena,) Tj ET
+0 g BT /F1 9 Tf 42.520 728.504 Td (then measure its centre into reference_markers. Rotation does not matter.) Tj ET
+0.6 G 0.4 w [3 3] 0 d 75.591 516.850 188.976 188.976 re S [] 0 d
+0 g 99.213 540.472 141.732 141.732 re f
+1 g 122.835 634.961 23.622 23.622 re f
+1 g 170.079 634.961 47.244 23.622 re f
+1 g 146.457 611.339 23.622 23.622 re f
+1 g 193.701 611.339 23.622 23.622 re f
+1 g 170.079 587.717 47.244 23.622 re f
+1 g 170.079 564.094 23.622 23.622 re f
+0 g BT /F1 10 Tf 75.591 502.677 Td (ID 0   bottom-left corner) Tj ET
+0.6 G 0.4 w [3 3] 0 d 330.709 516.850 188.976 188.976 re S [] 0 d
+0 g 354.331 540.472 141.732 141.732 re f
+1 g 377.953 611.339 94.488 23.622 re f
+1 g 377.953 587.717 23.622 23.622 re f
+1 g 448.819 587.717 23.622 23.622 re f
+1 g 377.953 564.094 23.622 23.622 re f
+1 g 425.197 564.094 23.622 23.622 re f
+0 g BT /F1 10 Tf 330.709 502.677 Td (ID 1   bottom-right corner) Tj ET
+0.6 G 0.4 w [3 3] 0 d 75.591 296.693 188.976 188.976 re S [] 0 d
+0 g 99.213 320.315 141.732 141.732 re f
+1 g 170.079 414.803 47.244 23.622 re f
+1 g 170.079 391.181 47.244 23.622 re f
+1 g 170.079 367.559 23.622 23.622 re f
+1 g 122.835 343.937 47.244 23.622 re f
+1 g 193.701 343.937 23.622 23.622 re f
+0 g BT /F1 10 Tf 75.591 282.520 Td (ID 2   top-right corner) Tj ET
+0.6 G 0.4 w [3 3] 0 d 330.709 296.693 188.976 188.976 re S [] 0 d
+0 g 354.331 320.315 141.732 141.732 re f
+1 g 377.953 414.803 23.622 23.622 re f
+1 g 448.819 414.803 23.622 23.622 re f
+1 g 377.953 391.181 23.622 23.622 re f
+1 g 448.819 391.181 23.622 23.622 re f
+1 g 401.575 367.559 23.622 23.622 re f
+1 g 401.575 343.937 47.244 23.622 re f
+0 g BT /F1 10 Tf 330.709 282.520 Td (ID 3   top-left corner) Tj ET
+0.6 G 0.4 w [3 3] 0 d 75.591 76.535 188.976 188.976 re S [] 0 d
+0 g 99.213 100.157 141.732 141.732 re f
+1 g 146.457 194.646 23.622 23.622 re f
+1 g 193.701 194.646 23.622 23.622 re f
+1 g 146.457 171.024 23.622 23.622 re f
+1 g 122.835 147.402 23.622 23.622 re f
+1 g 193.701 147.402 23.622 23.622 re f
+1 g 122.835 123.780 70.866 23.622 re f
+0 g BT /F1 10 Tf 75.591 62.362 Td (ID 4   optional extra: along an edge, survey it too) Tj ET
+0.6 G 0.4 w [3 3] 0 d 330.709 76.535 188.976 188.976 re S [] 0 d
+0 g 354.331 100.157 141.732 141.732 re f
+1 g 401.575 194.646 70.866 23.622 re f
+1 g 377.953 171.024 23.622 23.622 re f
+1 g 448.819 171.024 23.622 23.622 re f
+1 g 377.953 147.402 47.244 23.622 re f
+1 g 377.953 123.780 47.244 23.622 re f
+1 g 448.819 123.780 23.622 23.622 re f
+0 g BT /F1 10 Tf 330.709 62.362 Td (ID 5   optional extra: along an edge, survey it too) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000249 00000 n 
+0000003482 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+3552
+%%EOF

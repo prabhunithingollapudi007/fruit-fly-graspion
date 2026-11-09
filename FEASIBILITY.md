@@ -141,13 +141,13 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 **Camera notes:**
 - **Fixed short exposure.** Use ≤ 2–5 ms with flicker-free DC lighting. 33 ms auto-exposure gives about 4 mm of blur at 11.5 cm/s.
-- **Parallax.** The marker sits 15–20 mm above the floor. Fit the homography at marker height, using elevated reference markers. With the camera at 1 m, a floor-plane fit is off by 3–4 mm inside the current figure-8, 6–10 mm on the enlarged A 0.40–0.50 m path, and 8–14 mm at the arena edge: the same size as your simulated RMSE.
+- **Parallax.** The marker sits 15–20 mm above the floor. Fit the homography at marker height, using elevated reference markers. With the camera at 1 m, a floor-plane fit is off by 3–4 mm inside the current figure-8, 6–10 mm on the enlarged A 0.40–0.50 m path, and 8–14 mm at the arena edge: the same size as your simulated RMSE. The error scales as 1/H: the lab's camera with its 6 mm lens sees a 1 m arena from H ≥ 1.35 m (calibration/README.md, "This rig's camera"), which cuts these only by about a quarter (6–10 mm at the edge), so the elevated references are needed.
 - **Marker placement.**
   - Keep the TSOP and the IR LED (IR downlink) and the top NeoPixel (time sync) uncovered. The TEMT6202 matters only for the light-field option.
   - Part positions are INFERRED from the V1.1 photo, so check them on your board.
   - Use one marker size throughout (20–22 mm).
   - Measure the marker's offset and heading alignment relative to the body axis, and define the tracked reference point explicitly. Moving the reference point by 10 mm changes point speed by up to about 3 cm/s at 3 rad/s.
-- **Mono / NoIR cameras** (for example OV9281) need an IR-cut or 940 nm-blocking filter, otherwise the blaster's reflections flicker in the tracking images.
+- **Mono / NoIR cameras** (for example OV9281, or the lab's Basler acA3088-57um) need an IR-cut or 940 nm-blocking filter, otherwise the blaster's reflections flicker in the tracking images.
 
 ---
 
@@ -224,7 +224,7 @@ During 240 ms at ω = 1.56 rad/s the bot turns 0.37 rad (all latencies are ESTIM
 
 0. **Rig.**
    - Deployment surface; arena ≥ 1 m with foam walls.
-   - Rigid overhead camera. Global shutter at ≥ 60–120 fps with ≤ 2 ms exposure is needed for steps 4–5 and the latency test; a 30 fps rolling-shutter webcam is enough for the static map (step 3) only.
+   - Rigid overhead camera. Global shutter at ≥ 60–120 fps with ≤ 2 ms exposure is needed for steps 4–5 and the latency test; a 30 fps rolling-shutter webcam is enough for the static map (step 3) only. The lab's camera sits between the two: a 59 fps rolling-shutter machine-vision camera with short manual exposure. Its row offset (≤ ~17 ms top to bottom) cancels in the flash-aligned fits, because the LED and the marker share rows, but it biases an absolute latency test unless that is corrected by the LED's image row (INFERRED; calibration/README.md, "This rig's camera").
    - Flicker-free DC light; ChArUco intrinsics; 4 reference markers on spacers at marker height.
    - Right-handed world frame (image y points down, so watch the sign of ω).
 1. **Per bot.**
@@ -317,7 +317,7 @@ Then:
 
 | item | details |
 |---|---|
-| Camera | A USB3 global-shutter camera at 100–200 fps (machine-vision class, or a budget OV9281 UVC module, which needs an IR-cut filter). Prefer a **colour** sensor: the OV9281 is mono, and on a mono camera the calibration tracker can log only LED brightness, so the red low-battery flash looks like a sync flash and the PC-side low-battery stop does not work (calibration/README.md §2). A 1080p webcam with manual exposure is enough only for the static map, not for dynamics, noise or latency |
+| Camera | A USB3 global-shutter camera at 100–200 fps (machine-vision class, or a budget OV9281 UVC module, which needs an IR-cut filter). Prefer a **colour** sensor: the OV9281 is mono, and on a mono camera the calibration tracker can log only LED brightness, so the red low-battery flash looks like a sync flash and the PC-side low-battery stop does not work (calibration/README.md §2). A 1080p webcam with manual exposure is enough only for the static map, not for dynamics, noise or latency. **On hand:** Basler ace U acA3088-57um (3088 × 2064, mono, rolling shutter, 59 fps, USB3 Vision) with a Ricoh FL-CC0614A-2M 6 mm lens, mounted at H ≥ 1.35 m for a 1 m arena; it needs a 940 nm-blocking filter and Basler's pylon software (calibration/README.md, "This rig's camera") |
 | Rig and light | Aluminium-extrusion overhead rig; flicker-free DC LED panels |
 | Markers | ArUco 4x4_50 caps, 20–25 mm |
 | IR blaster | 4–8× TSAL6200 940 nm LEDs + logic-level MOSFET, driven by an Arduino Nano / RP2040 running IRremote as a USB-serial bridge; optionally one overhead TSOP75438 for uplink |

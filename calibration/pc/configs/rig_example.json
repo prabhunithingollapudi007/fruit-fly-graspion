@@ -1,21 +1,21 @@
 {
-  "_comment": "Example rig config. Every number is a placeholder: survey your own rig. Units: metres, radians. camera.camera_height_m: camera above the marker plane; bots.<id>.led_height: LED height minus marker height (negative below). Both feed the LED-height correction (intrinsics take precedence over camera_height_m).",
+  "_comment": "Example rig config. Every number is a placeholder: survey your own rig. Units: metres, radians. camera.camera_height_m: camera above the marker plane; bots.<id>.led_height: LED height minus marker height (negative below). Both feed the LED-height correction (intrinsics take precedence over camera_height_m). camera: the lab's Basler acA3088-57um at full resolution (calibration/README.md, 'This rig's camera'); exposure null leaves it to the camera, so set <= 2 ms in pylon Viewer and save it as the startup user set. camera_height_m 1.35 is the least that fits a 1 m arena with this 6 mm lens: measure yours.",
   "arena": {"xmin": 0.0, "xmax": 1.0, "ymin": 0.0, "ymax": 1.0, "margin": 0.08, "home": null},
   "reference_markers": {
-    "0": [0.02, 0.02],
-    "1": [0.98, 0.02],
-    "2": [0.98, 0.98],
-    "3": [0.02, 0.98]
+    "0": [0.03, 0.03],
+    "1": [0.97, 0.03],
+    "2": [0.97, 0.97],
+    "3": [0.03, 0.97]
   },
   "camera": {
     "index": 0,
-    "width": 1280,
-    "height": 720,
-    "fps": 60,
-    "exposure": -9,
+    "width": 3088,
+    "height": 2064,
+    "fps": 59,
+    "exposure": null,
     "intrinsics": "camera.npz",
-    "reference_size_m": 0.02,
-    "camera_height_m": 1.0
+    "reference_size_m": 0.05,
+    "camera_height_m": 1.35
   },
   "bridge": {"port": "COM5", "period_ms": 110},
   "bots": {
