@@ -67,27 +67,29 @@ What you need: one bot flashed with `calib_bot`, a second body flashed with [bot
 
 ## This rig's camera
 
-Model numbers from the lab; specs from Basler's product pages (read 2026-11-04).
+Model numbers from the lab (lens corrected to the 6 mm model on 2026-11-09). Camera specs from Basler's product pages (read 2026-11-04); lens specs from the vision-dimension.com product page (read 2026-11-09). pylon 26.10.1 on the lab PC sees the camera as "Basler ace USB3 Vision Camera" (2026-11-09).
 
 | Part | Specs |
 |---|---|
 | Camera | Basler ace U **acA3088-57um**: Sony IMX178, 3088 × 2064 px, 2.4 µm pixels, sensor 7.41 × 4.95 mm (1/1.8"), **mono**, **rolling shutter**, 59 fps at full resolution, 10/12 bit, USB 3.0, C-mount |
-| Lens | Ricoh **FL-CC1614-2M**: 16 mm, F1.4, for 2/3" sensors (covers the 1/1.8" sensor), C-mount, minimum working distance 250 mm |
+| Lens | Ricoh **FL-CC0614A-2M**: **6 mm**, F1.4–F16, for 2/3" sensors (covers the 1/1.8" sensor), C-mount, minimum object distance 0.10 m, manual focus and iris with lock screws, filter thread M46 × 0.5 |
 
-View against camera height H above the marker plane (thin lens, field ≈ 0.463 H × 0.309 H; computed, not measured):
+On this sensor the lens sees about 63° × 45° (computed; the vendor's 71.2° horizontal is for a full 2/3" sensor). View against camera height H above the marker plane (thin lens, field ≈ 1.235 H × 0.825 H; computed, not measured):
 
 | H | field of view | px/mm | 20 mm cap marker | 50 mm reference |
 |---|---|---|---|---|
-| 2.0 m | 93 × 62 cm | 3.3 | 67 px | 167 px |
-| 3.0 m | 139 × 93 cm | 2.2 | 44 px | 111 px |
-| 3.6 m | 167 × 111 cm | 1.85 | 37 px | 93 px |
-| 4.1 m | 190 × 127 cm | 1.63 | 33 px | 81 px |
+| 1.0 m | 123 × 82 cm | 2.5 | 50 px | 126 px |
+| 1.35 m | 166 × 111 cm | 1.86 | 37 px | 93 px |
+| 1.5 m | 185 × 123 cm | 1.67 | 33 px | 84 px |
+| 2.0 m | 246 × 165 cm | 1.25 | 25 px | 63 px |
 
-- **Height.** The short side of the image sets it: a 1 m arena plus the reference markers needs **H ≥ 3.6 m**. The lab's earlier blob-tracking script used 16.26 px/cm (1.63 px/mm), which matches this camera at full resolution from H ≈ 4.1 m (INFERRED: assumes its video was not resized).
+- **Height.** The short side of the image sets it: a 1 m arena plus the reference markers needs **H ≥ 1.35 m**. At 1 m the view is 82 cm tall, too short for the 1 m arena. The lab's earlier blob-tracking script used 16.26 px/cm (1.63 px/mm), which matches this camera at full resolution from H ≈ 1.5 m (INFERRED: assumes its video was not resized).
+- **Focus.** Open the iris to F1.4, focus on a printed marker at marker height, then stop down and lock both rings. Depth of field at 1 m with a 2-pixel blur limit (computed): about 0.84–1.23 m at F1.4, about 0.65–2.1 m at F4.
+- **Wide angle** (INFERRED, UNTESTED). Barrel distortion and parallax grow toward the edges of a 63° view. Parallax at the edge is about marker height × r / H, so a cap 17.5 mm up, 0.7 m off-centre at H = 1.35 m, is off by about 9 mm against floor-level references. Fit the homography with references raised to marker height. Measure the distortion on a first video before deciding whether the camera intrinsics are needed after all ("Not now" below).
 - **Full resolution, no binning.** 2 × 2 binning halves px/mm and leaves a 20 mm cap marker at about 3 px per marker cell, where a simulated detection test (blur and noise, the tracker's detector) lost 7–20 % of frames; at full resolution the cap has 5–6 px per cell. A narrower region of interest does not raise the frame rate, since the arena needs all 2064 rows (INFERRED for a rolling-shutter sensor). Plan on 59 fps.
 - **Exposure ≤ 2 ms**, set in pylon Viewer and saved as the camera's startup user set; `rig_example.json` leaves `camera.exposure` null so the tracker does not touch it. F1.4 leaves room to stop down to f/2.8–4.
 - **Mono.** The tracker detects it and logs the LED patch brightness instead of blue chroma (`led_mode` "luma", `led_r` NaN); the sync flash still shows as a brightness rise. Check that rise in `tracker.csv`.
-- **940 nm filter.** Basler's mono models have no IR-cut filter (INFERRED), so the blaster's reflections can flicker in the images. Fit a 940 nm-blocking filter to the lens; check the lens's filter thread before ordering.
+- **940 nm filter.** Basler's mono models have no IR-cut filter (INFERRED), so the blaster's reflections can flicker in the images. Fit a 940 nm-blocking filter to the lens's M46 × 0.5 thread.
 - **Lens resolution.** "-2M" marks a 2-megapixel lens (INFERRED from the name), so the optics blur over more than one 2.4 µm pixel; harmless for markers of 30 px and more.
 - **Rolling shutter** (INFERRED, UNTESTED). Rows are exposed up to one readout apart, at most about 1/59 s ≈ 17 ms top to bottom, while the tracker stamps a frame with one time. The bot's flash and its marker lie in the same rows, so the offset is common to both; a twist is fitted over a few centimetres of path, under 1 ms of row offset. `cam_offset` scatters by up to 17 ms with the bot's row, and the PC's marker-loss and geofence stops see up to 17 ms more latency, within `cam_latency_s` (0.05 s).
 - **Live capture.** `open_camera` opens a UVC camera through OpenCV's DirectShow backend. A Basler USB3 camera is a USB3 Vision device, not UVC, and needs Basler's pylon software. OpenCV may open it through pylon's DirectShow driver (UNTESTED; exposure units are then unknown, which is why exposure is set in pylon Viewer). There is no pypylon backend here yet. `track --video` on a pylon Viewer recording works either way.
