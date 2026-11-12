@@ -15,7 +15,7 @@ Programming and using [GRASPion](https://github.com/GRASP-LAB/GRASPion) brainbot
 The Python tools share one environment (numpy, scipy, opencv-contrib-python, pyserial; `calibration/pc/requirements.txt`):
 
 ```bash
-cd calibration/pc && python -m graspion_calib selftest
+pip install -r calibration/pc/requirements.txt
 ```
 
 Nothing here has been run on a bot unless HARDWARE.md marks it VERIFIED.

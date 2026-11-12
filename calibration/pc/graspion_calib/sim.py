@@ -1,4 +1,4 @@
-"""Synthetic GRASPion rig for offline tests and dry runs (`python -m graspion_calib run --sim`).
+"""Synthetic GRASPion rig for dry runs (`python -m graspion_calib run --sim`).
 
 Pieces, each mirroring the real one closely enough to exercise the pipeline end to end:
   SimFirmware  frame handling of firmware/calib_bot/calib_bot.ino (CRC, address filter, ops, command watchdog,

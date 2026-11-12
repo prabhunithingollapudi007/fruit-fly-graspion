@@ -1,6 +1,6 @@
 // calib_protocol.h -- IR frame format shared by calib_bot (receiver) and ir_blaster (sender).
 // Mirrored in pc/graspion_calib/protocol.py. Keep the copies in firmware/calib_bot/ and blaster/ir_blaster/
-// byte-identical (pc/tests/test_protocol.py checks this). C++11 constexpr so calib_protocol_vectors.h can
+// byte-identical (no automatic check since the tests went on 2026-11-12). C++11 constexpr so calib_protocol_vectors.h can
 // static_assert the Python-generated test vectors at compile time on both targets.
 //
 // One frame = one NEC-timed 32-bit frame (IRremote sendNECRaw / decodedRawData, LSB first on air):

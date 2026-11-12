@@ -1,11 +1,17 @@
 """Overhead ArUco tracker -> tracker.csv (+ optional raw video) and a live PoseStore for the scheduler.
 
-UNTESTED with a real camera: checked only on synthetic rendered scenes (tests/test_tracker.py).
+UNTESTED with a real camera.
 
 Geometry (FEASIBILITY.md 3.3):
-  * Four reference markers on spacers AT MARKER HEIGHT (15-20 mm above the floor, the height of the bot
-    caps), at surveyed world positions. The pixel -> metre homography is fitted to their centres, so it is
-    exact in the marker plane and has no parallax error for the bot markers.
+  * Four or more reference markers at surveyed world positions, all in one plane (the reference plane: flat
+    on the arena floor, or on spacers). The pixel -> metre homography is fitted to their centres, so it is exact
+    in that plane.
+  * Bot markers above the reference plane (bots.<id>.marker_height: the tag face above the reference plane,
+    the robot's real tag height) are seen through the homography pushed away from the camera nadir by
+    r * h / (Hc - h): 22.9 mm under a camera 0.94 m up is +2.5 % on every position about the nadir, and on every
+    speed. The tracker undoes it per corner, p_h = nadir + (p0 - nadir) * (1 - h / Hc), with the camera centre
+    from the pose recovered from H and the intrinsics K, or, without K, with camera_height_m (camera above the
+    reference plane) and the image centre as the nadir (off by h / Hc of the nadir's offset: a constant shift).
   * The homography is fitted once from the median of the first `ref_frames` frames (no per-frame jitter) and
     then watched: a reference drifting more than `ref_tol_m` raises a warning (bumped rig).
   * With exactly 4 references the fit is an exact solve, so their reprojection RMS is 0 whatever the survey
@@ -26,20 +32,25 @@ Geometry (FEASIBILITY.md 3.3):
     on grey or white surroundings, so a flash shows up whatever the background brightness. The LED must sit
     outside the marker and its white quiet zone. The patch is located in the raw (distorted) image: the
     world point is mapped through H^-1 to undistorted pixels and then re-distorted.
-  * LED height: the LED sits on the PCB, below the marker cap. Seen through the marker-plane homography it
-    appears pulled towards the camera nadir by r * dh / (Hc - dh) (~5 mm, several pixels, 0.5 m off-centre with
-    dh = 10 mm, Hc = 1 m), enough to miss the 7 px patch near the walls. Set bots.<id>.led_height (LED height
-    minus marker height, negative below) and the tracker projects the 3-D LED point with the camera pose
-    recovered from H and the intrinsics K, or, without K, scales about the image-centre point by Hc / (Hc - dh)
-    with camera_height_m (camera above the marker plane).
+  * LED height: the LED sits on the PCB, below the marker cap. Seen through the reference-plane homography a
+    raised point appears pushed away from the camera nadir by r * dz / (Hc - dz), enough to miss the 7 px patch
+    near the walls. Set bots.<id>.led_height (LED height minus marker height, negative below); the tracker
+    projects the 3-D LED point (marker_height + led_height above the reference plane) with the camera pose
+    recovered from H and K, or, without K, scales about the image-centre point by Hc / (Hc - dz) with
+    camera_height_m.
+  * No visible LED (bots.<id>.led_offset null, e.g. the LED under the marker cap): led_b and led_r are NaN.
   * Mono cameras (2-D frames, or B = G = R): chroma is identically 0 there, so no flash would ever be found.
     The tracker detects this when it fits the homography and logs the patch *brightness* in led_b instead
     (led_mode 'luma'; led_r = NaN, so a red low-battery flash cannot be told from a sync flash). Check the rise
     in tracker.csv; a colour camera is still preferred.
-Use a fixed short exposure (<= 2-5 ms) and flicker-free DC lighting.
+  * Intrinsics: an OpenCV .npz (K, dist) or a JSON file with K, dist and optionally size [width, height]
+    (graspion_tracking's intrinsics.json). With a size, frames of any other size are refused: a lens model
+    fitted in a camera window only fits that window.
+Use a fixed exposure and flicker-free DC lighting.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -59,15 +70,43 @@ def make_detector(dictionary="DICT_4X4_50"):
 
 
 class Undistorter:
-    def __init__(self, K=None, dist=None):
+    def __init__(self, K=None, dist=None, size=None, offset=(0, 0)):
+        """size: (width, height) of the frames the lens model is in, or None (not checked). offset: where those
+        frames start on the sensor (the camera window's OffsetX, OffsetY), so that the model can be moved to
+        another window (for_window)."""
         self.K = None if K is None else np.asarray(K, float)
         self.dist = None if dist is None else np.asarray(dist, float).ravel()
+        self.size = None if size is None else (int(size[0]), int(size[1]))
+        self.offset = (int(offset[0]), int(offset[1]))
         self.active = self.K is not None and self.dist is not None and np.any(self.dist != 0)
+
+    def for_window(self, offset_x, offset_y, width, height):
+        """The same lens in the pixels of another camera window: a window only crops the sensor, so the
+        principal point moves by the change of offset and nothing else does. Outside the window the model was
+        fitted in, the distortion is extrapolated."""
+        if self.K is None:
+            return self
+        K = self.K.copy()
+        K[0, 2] += self.offset[0] - int(offset_x)
+        K[1, 2] += self.offset[1] - int(offset_y)
+        return Undistorter(K, self.dist, (width, height), (offset_x, offset_y))
 
     @classmethod
     def from_npz(cls, path):
         d = np.load(path)
-        return cls(d["K"], d["dist"])
+        return cls(d["K"], d["dist"], d["size"] if "size" in d else None)
+
+    @classmethod
+    def from_file(cls, path):
+        """An OpenCV .npz (K, dist[, size]) or a JSON file with the same keys (graspion_tracking's
+        intrinsics.json: K 3x3, dist k1 k2 p1 p2 k3, size [width, height] in the camera window's pixels,
+        meta.window.offset_x / offset_y: where that window starts on the sensor, 0 if absent)."""
+        if str(path).lower().endswith(".npz"):
+            return cls.from_npz(path)
+        with open(path) as f:
+            d = json.load(f)
+        win = (d.get("meta") or {}).get("window") or {}
+        return cls(d["K"], d["dist"], d.get("size"), (win.get("offset_x", 0), win.get("offset_y", 0)))
 
     def undistort(self, pts):
         pts = np.asarray(pts, np.float64).reshape(-1, 2)
@@ -95,12 +134,17 @@ class FrameHandednessError(ValueError):
     pass
 
 
+class FrameSizeError(ValueError):
+    pass
+
+
 @dataclass
 class BotMarker:
     marker_id: int
-    led_offset: tuple = (0.012, 0.0)    # sync LED in the marker frame (forward, left) [m]; measure per bot
+    led_offset: tuple | None = (0.012, 0.0)  # sync LED in the marker frame (forward, left) [m]; None: no LED
     size_m: float = 0.02
     led_height: float = 0.0             # LED height minus marker height [m]; negative when the LED sits lower
+    height: float = 0.0                 # tag face above the reference-marker plane [m]: the robot's tag height
 
 
 def led_mode_of(img):
@@ -136,8 +180,10 @@ class Tracker:
         self.H = self.Hinv = None           # published last in _fit_h: other threads wait for H (see __main__)
         self._H = self._Hinv = None         # used while the fit is still being checked
         self._pose = None                   # (K, R, t) of the camera, world (marker plane z = 0) -> camera
-        self._nadir = None
+        self._nadir = None                  # world (x, y) under the camera centre (image centre without K)
+        self._cam_z = None                  # camera centre above the reference plane [m]; None if unknown
         self._led_height_warned = False
+        self._height_warned = False
         self._buf = []
         self.warnings = []
         self.ref_off_frames = {}            # reference id -> frames it was off by more than ref_tol
@@ -145,6 +191,14 @@ class Tracker:
         self.ref_check = {}
 
     # ------------------------------------------------------------------ homography
+    def check_frame_size(self, img):
+        """Refuse frames of another size than the lens model's (a camera window that was not set)."""
+        if self.und.size is not None:
+            h, w = img.shape[:2]
+            if (w, h) != self.und.size:
+                raise FrameSizeError(f"frames are {w} x {h} px but the intrinsics were fitted in "
+                                     f"{self.und.size[0]} x {self.und.size[1]}: set the camera window first")
+
     def _fit_h(self, img=None):
         ids = sorted(self.ref_world)
         src = np.median(np.array([[b[i][0] for i in ids] for b in self._buf]), axis=0)
@@ -189,10 +243,16 @@ class Tracker:
                                             "the units of the surveyed positions"))
         if self.und.K is not None:
             self._pose = self._camera_pose()
+        if self._pose is not None:
+            _, R, t = self._pose
+            C = -R.T @ t
+            self._nadir, self._cam_z = C[:2].copy(), float(C[2])
         if img is not None:
             h, w = img.shape[:2]
-            centre = self.und.undistort(np.array([[0.5 * (w - 1), 0.5 * (h - 1)]]))
-            self._nadir = self.to_world(centre)[0]
+            if self._pose is None:
+                centre = self.und.undistort(np.array([[0.5 * (w - 1), 0.5 * (h - 1)]]))
+                self._nadir = self.to_world(centre)[0]
+                self._cam_z = float(self.camera_height_m) if self.camera_height_m else None
             if self.led_mode == "auto":
                 self.led_mode = led_mode_of(img)
                 if self.led_mode == "luma":
@@ -210,7 +270,8 @@ class Tracker:
         U, _, Vt = np.linalg.svd(np.c_[M[:, 0], M[:, 1], np.cross(M[:, 0], M[:, 1])])
         R, t = U @ Vt, M[:, 2]
         if (-R.T @ t)[2] <= 0:                              # camera must be above the marker plane
-            self.warnings.append((None, "camera pose from H and K is not above the plane: LED height ignored"))
+            self.warnings.append((None, "camera pose from H and K is not above the plane: marker and LED heights "
+                                        "fall back to camera_height_m"))
             return None
         return K, R, t
 
@@ -231,6 +292,19 @@ class Tracker:
     def to_world(self, pts_und):
         return cv2.perspectiveTransform(np.asarray(pts_und, np.float64).reshape(-1, 1, 2), self._H).reshape(-1, 2)
 
+    def at_height(self, pw, h):
+        """Reference-plane points pw (where the camera rays meet that plane) -> the points h above the plane on
+        the same rays: nadir + (pw - nadir) * (1 - h / Hc)."""
+        pw = np.asarray(pw, float)
+        if not h:
+            return pw
+        if self._cam_z is None or self._nadir is None:
+            if not self._height_warned:
+                self._height_warned = True
+                self.warnings.append((None, "marker_height ignored: needs camera intrinsics or camera_height_m"))
+            return pw
+        return self._nadir + (pw - self._nadir) * (1.0 - h / self._cam_z)
+
     def led_pixel_undistorted(self, pw, dz=0.0):
         """Undistorted pixel of the world point pw (marker-plane x, y) raised by dz above the marker plane."""
         pw = np.asarray(pw, float)
@@ -238,8 +312,8 @@ class Tracker:
             K, R, t = self._pose
             pc = K @ (R @ np.array([pw[0], pw[1], dz]) + t)
             return (pc[:2] / pc[2]).reshape(1, 2)
-        if dz and self.camera_height_m and self._nadir is not None:
-            hc = float(self.camera_height_m)            # ray through the raised point meets the plane here
+        if dz and self._cam_z and self._nadir is not None:
+            hc = self._cam_z                            # ray through the raised point meets the plane here
             pw = self._nadir + (pw - self._nadir) * hc / (hc - dz)
         elif dz and not self._led_height_warned:
             self._led_height_warned = True
@@ -248,6 +322,8 @@ class Tracker:
 
     # ------------------------------------------------------------------ per frame
     def process(self, img_bgr, t, frame_idx):
+        if self.H is None:
+            self.check_frame_size(img_bgr)
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
         corners, ids, _ = self.det.detectMarkers(gray)
         if ids is None:
@@ -271,23 +347,24 @@ class Tracker:
         for i, c in und.items():
             if i in self.ref_world:
                 continue
-            w4 = self.to_world(c)
+            bm = self.bots.get(i)
+            h = float(getattr(bm, "height", 0.0) or 0.0) if bm else 0.0
+            w4 = self.at_height(self.to_world(c), h)
             centre = w4.mean(axis=0)
             up = 0.5 * (w4[0] + w4[1]) - 0.5 * (w4[3] + w4[2])        # bottom edge -> top edge
             right = 0.5 * (w4[1] + w4[2]) - 0.5 * (w4[0] + w4[3])     # left edge -> right edge
             hv = up / (np.linalg.norm(up) + 1e-12) + np.array([-right[1], right[0]]) / (np.linalg.norm(right) + 1e-12)
             theta = float(np.arctan2(hv[1], hv[0]))                   # both edge pairs: ~sqrt(2) less noise
             side = float(np.mean(np.linalg.norm(np.roll(w4, -1, 0) - w4, axis=1)))
-            bm = self.bots.get(i)
             nominal = bm.size_m if bm else self.ref_size_m
             if nominal and abs(side / nominal - 1) > self.size_tol:
                 continue                                        # misdetection or wrong plane
             led_b = led_r = float("nan")
-            if bm is not None:
+            if bm is not None and bm.led_offset is not None:
                 u = up / (np.linalg.norm(up) + 1e-12)
                 left = np.array([-u[1], u[0]])
                 pw = centre + bm.led_offset[0] * u + bm.led_offset[1] * left
-                pu = self.led_pixel_undistorted(pw, getattr(bm, "led_height", 0.0))
+                pu = self.led_pixel_undistorted(pw, h + (getattr(bm, "led_height", 0.0) or 0.0))
                 px, py = self.und.distort(pu)[0]
                 x0, y0, r = int(round(px)), int(round(py)), self.patch
                 patch = img_bgr[max(y0 - r, 0):y0 + r + 1, max(x0 - r, 0):x0 + r + 1]
@@ -319,6 +396,84 @@ def open_camera(index=0, width=1280, height=720, fps=60, exposure=None, backend=
     return cap
 
 
+class PylonCapture:
+    """Basler camera through pypylon with a cv2.VideoCapture-like read() -> (ok, mono frame). UNTESTED on the
+    camera: written after cam_focus/focus.py, which ran on it. It sets the camera window, Mono8 and fixed exposure
+    and gain. A window without offsets is centred on the sensor, the offsets rounded down to the camera's steps
+    (as graspion_tracking's camera_view.py does); settings["window"] is what the camera applied, and the lens
+    model is moved to it (Undistorter.for_window). A window the camera does not take as asked is refused."""
+
+    def __init__(self, window=None, exposure_us=None, gain_db=None, timeout_ms=1000):
+        from pypylon import pylon
+        self._pylon = pylon
+        self.timeout_ms = int(timeout_ms)
+        tl = pylon.TlFactory.GetInstance()
+        if not tl.EnumerateDevices():
+            raise SystemExit("no Basler camera found: is it plugged in, and not attached to WSL / the "
+                             "graspion_ws_jazzy container (usbipd detach --busid <id>)? Close pylon Viewer too.")
+        self.cam = pylon.InstantCamera(tl.CreateFirstDevice())
+        self.cam.Open()
+        c = self.cam
+        c.PixelFormat.Value = "Mono8"
+        c.ExposureAuto.Value = "Off"
+        c.GainAuto.Value = "Off"
+        if exposure_us is not None:
+            c.ExposureTime.Value = float(exposure_us)
+        if gain_db is not None:
+            c.Gain.Value = float(gain_db)
+        if window:
+            w, h = int(window["width"]), int(window["height"])
+            c.OffsetX.Value, c.OffsetY.Value = 0, 0               # an offset limits the size: clear it first
+            c.Width.Value, c.Height.Value = w, h
+
+            def centred(node, free):
+                inc = int(node.GetInc()) if hasattr(node, "GetInc") else 1
+                return max(0, free // 2 // inc * inc)
+            ox = int(window["offset_x"]) if window.get("offset_x") is not None else centred(c.OffsetX, c.WidthMax.Value - w)
+            oy = int(window["offset_y"]) if window.get("offset_y") is not None else centred(c.OffsetY, c.HeightMax.Value - h)
+            want = (ox, oy, w, h)
+            c.OffsetX.Value, c.OffsetY.Value = ox, oy
+            got = (c.OffsetX.Value, c.OffsetY.Value, c.Width.Value, c.Height.Value)
+            if got != want:
+                c.Close()
+                raise RuntimeError(f"camera window is (x, y, w, h) {got}, not {want}")
+        self.settings = {"exposure_us": float(c.ExposureTime.Value), "gain_db": float(c.Gain.Value),
+                         "window": [int(c.OffsetX.Value), int(c.OffsetY.Value), int(c.Width.Value),
+                                    int(c.Height.Value)],
+                         "fps": float(c.ResultingFrameRate.Value) if hasattr(c, "ResultingFrameRate") else None}
+        c.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
+    def isOpened(self):
+        return self.cam.IsGrabbing()
+
+    def read(self):
+        try:
+            r = self.cam.RetrieveResult(self.timeout_ms, self._pylon.TimeoutHandling_ThrowException)
+        except Exception:
+            return False, None
+        try:
+            if not r.GrabSucceeded():
+                return False, None
+            return True, r.Array.copy()
+        finally:
+            r.Release()
+
+    def release(self):
+        try:
+            self.cam.StopGrabbing()
+        finally:
+            self.cam.Close()
+
+
+def open_camera_from_config(cam_cfg):
+    """camera.backend 'pylon' (Basler through pypylon: window, exposure_us, gain_db) or the default OpenCV
+    camera (index, width, height, fps, exposure)."""
+    if cam_cfg.get("backend") == "pylon":
+        return PylonCapture(cam_cfg.get("window"), cam_cfg.get("exposure_us"), cam_cfg.get("gain_db"))
+    return open_camera(cam_cfg.get("index", 0), cam_cfg.get("width", 1280), cam_cfg.get("height", 720),
+                       cam_cfg.get("fps", 60), cam_cfg.get("exposure"))
+
+
 class CameraThread(threading.Thread):
     """Grab -> track -> PoseStore + CSV (+ raw video for offline re-tracking). Timestamps: perf_counter at read."""
 
@@ -342,7 +497,8 @@ class CameraThread(threading.Thread):
                     break
                 if self.video_path and writer is None:
                     h, w = img.shape[:2]
-                    writer = cv2.VideoWriter(str(self.video_path), cv2.VideoWriter_fourcc(*"MJPG"), self.fps, (w, h))
+                    writer = cv2.VideoWriter(str(self.video_path), cv2.VideoWriter_fourcc(*"MJPG"), self.fps, (w, h),
+                                             img.ndim == 3)
                 if writer is not None:
                     writer.write(img)
                 for d in self.tracker.process(img, t, self.frame_idx):
@@ -356,6 +512,10 @@ class CameraThread(threading.Thread):
             if writer is not None:
                 writer.release()
             self.csv.close()
+            try:
+                self.cap.release()
+            except Exception:
+                pass
 
     def stop(self):
         self._stop.set()
@@ -391,13 +551,16 @@ def marker_corners_world(x, y, theta, size):
 
 def render_scene(H_world_to_px, markers, img_size=(1280, 720), dictionary="DICT_4X4_50", px_per_cell=12,
                  leds=(), background=235):
-    """Render flat ArUco markers (id, x, y, theta, size_m) seen through a pinhole homography (no distortion).
+    """Render flat ArUco markers (id, x, y, theta, size_m[, H]) seen through a pinhole homography (no distortion);
+    a marker's own H (its plane -> pixels) renders it in another plane, e.g. raised above the floor.
 
     leds: (x, y, (b, g, r), radius_px) world spots drawn after the markers. For tests only."""
     w, h = img_size
     img = np.full((h, w, 3), background, np.uint8)
     d = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dictionary))
-    for mid, x, y, theta, size in markers:
+    for mk in markers:
+        mid, x, y, theta, size = mk[:5]
+        Hm = mk[5] if len(mk) > 5 else H_world_to_px
         n = 6 * px_per_cell                                     # 4x4 bits + 1-cell black border
         mk = cv2.aruco.generateImageMarker(d, int(mid), n)
         q = px_per_cell * 2                                     # white quiet zone of 2 cells
@@ -405,7 +568,7 @@ def render_scene(H_world_to_px, markers, img_size=(1280, 720), dictionary="DICT_
         tile = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
         full = size * (n + 2 * q) / n
         cw = marker_corners_world(x, y, theta, full)
-        dst = cv2.perspectiveTransform(cw.reshape(-1, 1, 2), H_world_to_px).reshape(4, 2).astype(np.float32)
+        dst = cv2.perspectiveTransform(cw.reshape(-1, 1, 2), Hm).reshape(4, 2).astype(np.float32)
         m = tile.shape[0]
         src = np.array([[0, 0], [m - 1, 0], [m - 1, m - 1], [0, m - 1]], np.float32)
         M = cv2.getPerspectiveTransform(src, dst)

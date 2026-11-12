@@ -1,0 +1,109 @@
+{
+  "name": "measured 2026-11-12 from the camera: 8 markers, 953 x 729 mm marked area",
+  "outline": [
+    [
+      -0.003609887926970666,
+      0.0
+    ],
+    [
+      0.9491184550307498,
+      0.0
+    ],
+    [
+      0.9491184550307498,
+      0.7289311439783058
+    ],
+    [
+      -0.003609887926970666,
+      0.7289311439783058
+    ]
+  ],
+  "markers": [
+    {
+      "id": 0,
+      "center": [
+        0.026712,
+        0.026712
+      ],
+      "side": 0.039878,
+      "yaw": 0.05137590992270986,
+      "z": 0.0
+    },
+    {
+      "id": 1,
+      "center": [
+        0.91865473750759,
+        0.026712
+      ],
+      "side": 0.039878,
+      "yaw": -0.02757934010604166,
+      "z": 0.0
+    },
+    {
+      "id": 2,
+      "center": [
+        0.9224064550307498,
+        0.7022191439783059
+      ],
+      "side": 0.039878,
+      "yaw": 0.007723954752364067,
+      "z": 0.0
+    },
+    {
+      "id": 3,
+      "center": [
+        0.023102112073029334,
+        0.6750705261571758
+      ],
+      "side": 0.039878,
+      "yaw": -0.035687235047133926,
+      "z": 0.0
+    },
+    {
+      "id": 4,
+      "center": [
+        0.4333714651094644,
+        0.02885947311212404
+      ],
+      "side": 0.039878,
+      "yaw": -1.54733620098213,
+      "z": 0.0
+    },
+    {
+      "id": 5,
+      "center": [
+        0.9212109407795738,
+        0.3564856322629104
+      ],
+      "side": 0.039878,
+      "yaw": -0.03429762822214413,
+      "z": 0.0
+    },
+    {
+      "id": 6,
+      "center": [
+        0.4937274472651696,
+        0.6922359362891227
+      ],
+      "side": 0.039878,
+      "yaw": 0.060639597870959905,
+      "z": 0.0
+    },
+    {
+      "id": 7,
+      "center": [
+        0.02476950687092864,
+        0.33633625935064876
+      ],
+      "side": 0.039878,
+      "yaw": 0.018307277442130544,
+      "z": 0.0
+    }
+  ],
+  "notes": [
+    "The markers are stuck on roughly as in the template (corners 0-3, edge middles 4-7) but not flush with the plate and not on a 1 x 1 m square: centres and turns measured from arena_frame.png by a joint least-squares fit of the camera pose and the layout to all marker corners, with this folder's interim lens model; scale from the printed side 0.039878 m.",
+    "Frame (the template's convention): marker 0's centre at (0.026712, 0.026712) m, x towards marker 1 (its y = 0.026712), y towards marker 3, z up, metres.",
+    "outline: the marked area, the markers' centres +- 0.026712 m (not the plate's physical edges).",
+    "Measured 2026-11-12T12:51:37+00:00; measure again after moving any marker (arena_layout2.py)."
+  ]
+}

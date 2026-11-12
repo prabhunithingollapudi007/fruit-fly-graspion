@@ -59,9 +59,10 @@ class PoseStore:
 
 
 class TrackerCSV:
-    """Append-only tracker CSV; flushes every `flush_every` rows so a crash loses little."""
+    """Append-only tracker CSV; flushes every `flush_every` rows (0.2 s at 50 fps) so a crash loses little and
+    a live viewer (live_view/) can follow it."""
 
-    def __init__(self, path, flush_every=200):
+    def __init__(self, path, flush_every=10):
         self._f = open(path, "w", newline="")
         self._w = csv.writer(self._f)
         self._w.writerow(TRACKER_COLUMNS)

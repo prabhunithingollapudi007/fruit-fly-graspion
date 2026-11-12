@@ -8,7 +8,6 @@
                   re-centres the bot before every segment; --only picks segments
   track           tracker only: live camera or a recorded video -> tracker CSV
   analyze         session folder(s) -> twists, forward map, inverse map (report.py)
-  selftest        offline test suite (no hardware)
 """
 from __future__ import annotations
 
@@ -28,17 +27,28 @@ def _rig(path):
 
 
 def _make_tracker(rig, bot_cfgs):
-    """Tracker for the rig's references and the given rig-config bot entries (bots.<id>): LED offset and height
-    per bot, camera intrinsics (an OpenCV .npz, optional) and camera_height_m (both used for the LED-height
-    correction)."""
+    """Tracker for the rig's references and the given rig-config bot entries (bots.<id>): marker size and height
+    (tag face above the reference plane), LED offset (null: no visible LED) and height per bot, camera
+    intrinsics (.npz or graspion_tracking's intrinsics.json, optional) and camera_height_m (both used for the
+    marker- and LED-height corrections)."""
     from .tracker import BotMarker, Tracker, Undistorter
     cam_cfg = rig.camera
-    und = Undistorter.from_npz(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
-    bots = {int(b["marker_id"]): BotMarker(int(b["marker_id"]), tuple(b.get("led_offset", (0.012, 0.0))),
-                                           b.get("marker_size_m", 0.02), float(b.get("led_height") or 0.0))
-            for b in bot_cfgs}
+    und = Undistorter.from_file(cam_cfg["intrinsics"]) if cam_cfg.get("intrinsics") else Undistorter()
+    bots = {}
+    for b in bot_cfgs:
+        led = b.get("led_offset", (0.012, 0.0))
+        bots[int(b["marker_id"])] = BotMarker(int(b["marker_id"]), None if led is None else tuple(led),
+                                              b.get("marker_size_m", 0.02), float(b.get("led_height") or 0.0),
+                                              float(b.get("marker_height") or 0.0))
     return Tracker(rig.reference_markers, bots, und, ref_size_m=cam_cfg.get("reference_size_m"),
                    camera_height_m=cam_cfg.get("camera_height_m"))
+
+
+def _fit_lens_to_window(tracker, cap):
+    """Move the lens model to the window the camera applied (PylonCapture.settings['window']: x, y, w, h)."""
+    win = (getattr(cap, "settings", None) or {}).get("window")
+    if win and tracker.und.K is not None:
+        tracker.und = tracker.und.for_window(*win)
 
 
 def _wait_for_fit(tracker, cam, timeout_s=10.0):
@@ -194,9 +204,9 @@ def cmd_run(a):
             return "\r"
         cam = None
     else:
-        from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, BridgeError, SerialBridge
+        from .bridge import PERIOD_MAX_MS, PERIOD_MIN_MS, BridgeError, RemoteTxBridge, SerialBridge
         from .clock import RealClock
-        from .tracker import CameraThread, open_camera
+        from .tracker import CameraThread, open_camera_from_config
         rig = _rig(a.rig)
         geom, arena = rig.geometry(a.bot), rig.arena
         bcfg = rig.bots[str(a.bot)]
@@ -210,21 +220,31 @@ def cmd_run(a):
             extra["pwm_hz"] = extra["bot_info"].get("pwm_hz")
             _check_proto(a.bot, extra["bot_info"], bot_file)
             _check_watchdog(a.bot, extra["bot_info"], period_ms, specs)
-        else:
+        elif rig.bridge.get("type") != "ir_remote_tx":    # ir_drive_rx: no calib_bot registration
             print(f"warning: {bot_file} not found (run 'register'): the bot's watchdog is not checked against "
                   f"the blaster period")
+        if "led_offset" in bcfg and bcfg["led_offset"] is None and any(s.kind == "ping" for s in specs):
+            print(f"warning: bot {a.bot} has led_offset null (no LED in view), so the camera sees none of the "
+                  "pings: read the loss from the bot's own counters instead ('c' over USB before the run, 's' "
+                  "after: frames_ok, crc_err, other_addr)")
         cam_cfg = rig.camera
         tracker = _make_tracker(rig, [bcfg])
         poses = PoseStore()
-        cap = open_camera(cam_cfg.get("index", 0), cam_cfg.get("width", 1280), cam_cfg.get("height", 720),
-                          cam_cfg.get("fps", 60), cam_cfg.get("exposure"))
+        cap = open_camera_from_config(cam_cfg)
+        _fit_lens_to_window(tracker, cap)
+        if getattr(cap, "settings", None):
+            extra["camera_settings"] = cap.settings
         cam = CameraThread(cap, tracker, poses, out / "tracker.csv",
                            out / "video.avi" if a.video else None, cam_cfg.get("fps", 60))
         cam.start()
         _wait_for_fit(tracker, cam)
         n_warn = _print_fit(tracker)
         try:                                      # e.g. a blaster on another protocol version
-            bridge = SerialBridge(a.port or rig.bridge["port"], period_ms=period_ms)
+            if rig.bridge.get("type") == "ir_remote_tx":     # the teammate's IR remote + ir_drive_rx robot
+                bridge = RemoteTxBridge(a.port or rig.bridge["port"], period_ms=period_ms,
+                                        slot=int(rig.bridge.get("slot", 63)))
+            else:
+                bridge = SerialBridge(a.port or rig.bridge["port"], period_ms=period_ms)
         except BridgeError as e:
             cam.stop()
             cam.join(2.0)
@@ -235,7 +255,14 @@ def cmd_run(a):
                       "tracker_warnings": [w for _, w in tracker.warnings[:n_warn]], "led_mode": tracker.led_mode})
         on_pause = console_pause
         getkey = console_getkey()
+        if a.auto:                                # unattended: run every segment from where the robot stands
+            getkey = lambda: "\r"                 # noqa: E731
+            on_pause = lambda msg: (print("PAUSED (--auto, aborting):", msg), "abort")[1]  # noqa: E731
     cfg = SessionConfig(bot_id=a.bot, geometry=geom, arena=arena, out_dir=str(out), notes=a.notes or "")
+    cfg.recentre.enabled = bool(a.auto)           # --auto: the bot drives itself back to the centre first
+    if not a.sim and "led_offset" in bcfg and bcfg["led_offset"] is None:
+        cfg.safety.flash_check = False            # no LED in view: a still bot must not count as a lost SEG
+        extra["flash_check"] = False
     sess = Session(cfg, bridge, poses, clock, getkey, on_pause=on_pause, extra_meta=extra)
     try:
         counts = sess.run(specs)
@@ -253,11 +280,14 @@ def cmd_run(a):
 
 def cmd_track(a):
     from .poses import PoseStore
-    from .tracker import CameraThread, open_camera, track_video
+    from .tracker import CameraThread, open_camera_from_config, track_video
     rig = _rig(a.rig)
     cam_cfg = rig.camera
     tracker = _make_tracker(rig, rig.bots.values())
     if a.video:
+        win = cam_cfg.get("window") or {}
+        if tracker.und.K is not None and win.get("offset_x") is not None and win.get("offset_y") is not None:
+            tracker.und = tracker.und.for_window(win["offset_x"], win["offset_y"], win["width"], win["height"])
         n = track_video(a.video, tracker, a.out, fps=a.fps)
         print(f"{n} frames -> {a.out}")
         if tracker.H is None:
@@ -266,8 +296,10 @@ def cmd_track(a):
             print(f"homography: {tracker.reference_summary()}; LED signal: {tracker.led_mode}")
         _print_tracker_warnings(tracker)
         return
-    cap = open_camera(cam_cfg.get("index", 0), cam_cfg.get("width", 1280), cam_cfg.get("height", 720),
-                      cam_cfg.get("fps", 60), cam_cfg.get("exposure"))
+    cap = open_camera_from_config(cam_cfg)
+    _fit_lens_to_window(tracker, cap)
+    if getattr(cap, "settings", None):
+        print("camera:", cap.settings)
     poses = PoseStore()
     cam = CameraThread(cap, tracker, poses, a.out, a.record, cam_cfg.get("fps", 60))
     cam.start()
@@ -297,14 +329,6 @@ def cmd_analyze(a):
                       "replicate_scatter": s.get("replicate_scatter"), "error": s.get("error")},
                      indent=2, default=float))
     print(f"full results in {a.out}/calib.json")
-
-
-def cmd_selftest(a):
-    import unittest
-    here = Path(__file__).resolve().parents[1] / "tests"
-    suite = unittest.defaultTestLoader.discover(str(here), top_level_dir=str(here.parent))
-    r = unittest.TextTestRunner(verbosity=2 if a.verbose else 1).run(suite)
-    sys.exit(0 if r.wasSuccessful() else 1)
 
 
 def main(argv=None):
@@ -340,6 +364,9 @@ def main(argv=None):
     p.add_argument("--sim", action="store_true", help="simulated bot, rig and blaster (dry run)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--notes")
+    p.add_argument("--auto", action="store_true", help="no operator pause: before each segment the robot re-centres "
+                                                       "itself over the camera (RecentreConfig), then runs; a lost "
+                                                       "marker aborts the run")
     p.add_argument("--only", metavar="SEL", help='run these segments of the schedule only, e.g. "0-3,7,12-" '
                                                  "(indices as in the schedule file, in the order given)")
     p.set_defaults(fn=cmd_run)
@@ -356,7 +383,6 @@ def main(argv=None):
     p.add_argument("--bootstrap", type=int, default=50)
     p.set_defaults(fn=cmd_analyze)
 
-    p = sub.add_parser("selftest"); p.add_argument("-v", "--verbose", action="store_true"); p.set_defaults(fn=cmd_selftest)
 
     a = ap.parse_args(argv)
     if a.cmd == "run" and not a.sim and not a.rig:

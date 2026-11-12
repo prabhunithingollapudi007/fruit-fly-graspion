@@ -117,6 +117,81 @@ class SerialBridge:
         self._ser.close()
 
 
+class RemoteTxBridge:
+    """The SerialBridge API on graspion_comm's ir_remote_tx (the teammate's IR remote, e.g. W10nY), driving a robot
+    that runs ir_drive_rx. UNTESTED driving a robot from here; ir_remote_tx -> ir_drive_rx itself ran on hardware.
+
+    Our frames are translated, and frames.csv still logs them as ours: STOP (any address) -> 's'; SEG, DRIVE and
+    RECENTRE -> 'pwm <128+L> <128+R> HOLD_MS', sent when (L, R) changes or HOLD_MS / 2 after the last one; PING ->
+    nothing (no LED to flash). In between, the remote repeats the command over IR every 100 ms by itself, so our
+    keep-alives send nothing; a 'pwm' each time would add a second ~70 ms IR frame per period and choke the
+    2400-baud link. ir_drive_rx writes the PWM bytes to analogWrite as calib_bot does (128 + drive; 128 = stop)
+    and coasts 0.5 s after the last frame: if the PC dies, the robot stops within HOLD_MS + 0.5 s.
+    t_ack is the remote's OK, when the first IR frame has just been queued (it is on air ~70 ms later)."""
+
+    HOLD_MS = 1000
+
+    def __init__(self, port, baud=115200, period_ms=110, slot=63, timeout_s=1.0, ser=None, now=None, sleep=None):
+        if ser is None:
+            import serial
+            ser = serial.Serial(port, baud, timeout=timeout_s)
+        self._ser, self._now, self._sleep = ser, now or time.perf_counter, sleep or time.sleep
+        self.period_s = int(period_ms) / 1000.0
+        self._last_req = -1e9
+        self._active, self._t_cmd = None, -1e9
+        try:
+            self.resync()
+            rid = self._cmd("id", "ID,")
+            self._cmd(f"slot {int(slot)}")
+            self.info = f"ir_remote_tx id={rid.split(',', 1)[1]} slot={int(slot)}"
+        except BaseException:
+            self._ser.close()
+            raise
+
+    def _cmd(self, line, want=None):
+        """Send one command line; skip the remote's TX / READY lines until its OK or ERR. Returns the line that
+        starts with `want` (if given) or the OK."""
+        self._ser.write((line + "\n").encode("ascii"))
+        got = None
+        t_end = self._now() + 1.0
+        while self._now() < t_end:
+            reply = self._ser.readline().decode("ascii", "replace").strip()
+            if want and reply.startswith(want):
+                got = reply
+            elif reply.startswith("OK,"):
+                return got or reply
+            elif reply.startswith("ERR,"):
+                raise BridgeError(f"ir_remote_tx rejected {line!r}: {reply}")
+        raise BridgeError(f"no OK from ir_remote_tx to {line!r} (unplugged, or not ir_remote_tx?)")
+
+    def send(self, raw, check=True) -> SendRecord:
+        wait = self._last_req + self.period_s - self._now()   # start-to-start pacing, like bot_blaster
+        if wait > 0:
+            self._sleep(wait)
+        t_req = self._last_req = self._now()
+        f = unpack(raw)
+        if f.op == 0:                                          # STOP
+            self._cmd("s")
+            self._active = None
+        elif f.op in (1, 2, 3):                                # SEG, DRIVE, RECENTRE
+            if (f.L, f.R) != self._active or t_req - self._t_cmd > self.HOLD_MS / 2000.0:
+                self._cmd(f"pwm {128 + f.L} {128 + f.R} {self.HOLD_MS}")
+                self._active, self._t_cmd = (f.L, f.R), t_req
+        return SendRecord(t_req, self._now(), raw, -1, -1)
+
+    def resync(self, wait_s=None):
+        self._ser.write(b"\n")
+        self._sleep(0.3 if wait_s is None else wait_s)
+        self._ser.reset_input_buffer()
+
+    def close(self):
+        try:
+            self._cmd("s")
+        except Exception:
+            pass
+        self._ser.close()
+
+
 class FrameLog:
     """frames.csv: every frame the session sent, with host times. The analysis rebuilds commands from it."""
     COLUMNS = ["t_req", "t_ack", "raw", "op", "bot", "L", "R", "seg", "purpose"]

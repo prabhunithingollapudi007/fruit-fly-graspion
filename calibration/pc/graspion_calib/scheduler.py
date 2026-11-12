@@ -15,7 +15,7 @@ or any exception. A nudge stops on marker loss or at the arena fence while movin
 On exit the scheduler sends STOP to the bot and a broadcast STOP, each in its own try (resyncing the bridge
 after a failure, e.g. a Ctrl-C that left half a reply in the serial buffer); the original exception propagates.
 
-UNTESTED on the rig: exercised only against sim.SimWorld (tests/test_scheduler.py).
+UNTESTED on the rig: dry runs only, against sim.SimWorld (run --sim).
 """
 from __future__ import annotations
 
@@ -55,6 +55,8 @@ class SafetyConfig:
     flash_window_s: float = 0.5        # flash expected within this time after the SEG acknowledgement
     flash_rise: float = 40.0           # LED level rise over the pre-segment baseline that counts as a flash
     missed_motion_m: float = 0.003     # less displacement than this + no flash -> the SEG was missed
+    flash_check: bool = True           # False when the camera cannot see the sync LED (bots.<id>.led_offset null):
+                                       # no "missed" retries, since a bot at rest would look like a lost SEG
     max_retries: int = 1
 
     def stop_latency_s(self, period_s):
@@ -77,6 +79,23 @@ class NudgeConfig:
 
 
 @dataclass
+class RecentreConfig:
+    """Automatic re-centring before each drive segment (run --auto), closed over the camera with the nudge pairs:
+    pivot towards home, drive straight (its veer is corrected by the next pivot), then pivot to the arena's long
+    axis (heading 0 or 180 deg, whichever is nearer), so a segment starts with the most room ahead.
+    Measured 2026-11-12 through ir_remote_tx: (0, 90) pivots left at ~1.1 rad/s while creeping ~2.4 cm/s,
+    (80, 80) runs ~7.4 cm/s curving right (-0.4 rad/s)."""
+    enabled: bool = False
+    pos_tol_m: float = 0.05            # home reached within this ...
+    pos_exit_m: float = 0.09           # ... and only left again beyond this (a pivot creeps a few cm)
+    aim_tol_deg: float = 30.0          # drive straight only while heading within this of the bearing to home
+    head_tol_deg: float = 20.0         # final heading tolerance (a pivot overshoots ~10-15 deg at 1.1 rad/s)
+    timeout_s: float = 30.0
+    settle_s: float = 0.5              # wait this long after the last segment before steering
+    tries: int = 3                     # a segment whose re-centre fails this often is skipped, not run off-centre
+
+
+@dataclass
 class SessionConfig:
     bot_id: int
     geometry: BotGeometry
@@ -84,6 +103,7 @@ class SessionConfig:
     out_dir: str
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     nudge: NudgeConfig = field(default_factory=NudgeConfig)
+    recentre: RecentreConfig = field(default_factory=RecentreConfig)
     notes: str = ""
 
 
@@ -150,7 +170,8 @@ class Session:
         self._ev_w = csv.writer(self._ev_f)
         self._ev_w.writerow(["t", "event", "detail"])
         self.meta = {"bot_id": cfg.bot_id, "geometry": asdict(cfg.geometry), "arena": asdict(cfg.arena),
-                     "safety": asdict(cfg.safety), "nudge": asdict(cfg.nudge), "notes": cfg.notes,
+                     "safety": asdict(cfg.safety), "nudge": asdict(cfg.nudge),
+                     "recentre": asdict(cfg.recentre), "notes": cfg.notes,
                      "started_wall": time.strftime("%Y-%m-%d %H:%M:%S"), "proto": P.PROTO_VERSION,
                      "bridge_info": getattr(bridge, "info", ""), "period_s": self.period_s(),
                      "geofence_lookahead_s": self.lookahead_s()}
@@ -313,6 +334,51 @@ class Session:
             self.event(f"nudge_{result}", f"seg {seg} key {key}")
             print(f"\r    nudge stopped: {result:60s}")
 
+    def _recentre(self, seg):
+        """Drive the bot back to home and onto the long axis (RecentreConfig). Returns "done", "marker_loss",
+        "geofence" or "timeout"; the bot is stopped at the end in every case."""
+        rc, nc, saf, arena = self.cfg.recentre, self.cfg.nudge, self.cfg.safety, self.cfg.arena
+        hx, hy = arena.centre
+        aim, head = math.radians(rc.aim_tol_deg), math.radians(rc.head_tol_deg)
+        self.clock.sleep(rc.settle_s)       # a segment's coast must not read as "driving away from home"
+        t0, at_home, result = self.clock.now(), False, "timeout"
+        while self.clock.now() - t0 < rc.timeout_s:
+            now = self.clock.now()
+            if self.pose_age() > saf.marker_loss_s:
+                result = "marker_loss"
+                break
+            t_pose, x, y, th = self.body_pose()
+            dist = math.hypot(hx - x, hy - y)
+            at_home = dist < (rc.pos_exit_m if at_home else rc.pos_tol_m)
+            if at_home:
+                e = wrap((0.0 if math.cos(th) >= 0 else math.pi) - th)
+                if abs(e) <= head:
+                    result = "done"
+                    break
+            else:
+                e = wrap(math.atan2(hy - y, hx - x) - th)
+            if not at_home and abs(e) <= aim:
+                L, R = nc.straight
+            else:
+                L, R = nc.pivot_ccw if e > 0 else nc.pivot_cw
+            straight = (L, R) == tuple(nc.straight)
+            vx, vy, _ = self.recent_rates()
+            h = self.lookahead_s() + max(0.0, now - t_pose)
+            px, py = x + vx * h, y + vy * h
+            if straight and not arena.inside(px, py, min(nc.fence_m, arena.margin)) and \
+                    math.hypot(hx - px, hy - py) > dist:   # pivots only creep 2-3 cm on a ~2 cm circle: let them
+                result = "geofence"
+                break
+            mode = "recentre_" + ("drive" if straight else "turn")
+            self.send(P.OP_RECENTRE, L, R, seg, mode)
+        self.stop(seg, "recentre_stop")
+        _, x, y, th = self.body_pose() or (0, float("nan"), float("nan"), float("nan"))
+        self.event(f"recentre_{result}", f"seg {seg} after {self.clock.now() - t0:.1f} s at ({x:.3f}, {y:.3f}) "
+                                         f"heading {math.degrees(th):.0f} deg")
+        print(f"\r    re-centre {result} after {self.clock.now() - t0:.1f} s: bot at ({x:.2f}, {y:.2f}) m, "
+              f"heading {math.degrees(th):.0f} deg")
+        return result
+
     # ------------------------------------------------------------------ one segment
     def _log_segment(self, i, attempt, spec: SegmentSpec, rec_seg, rec_end, status, flash, moved, pose0, n):
         x0, y0, th0 = pose0 if pose0 else (float("nan"),) * 3
@@ -377,7 +443,7 @@ class Session:
                 checked = True
                 flash = self._flash_seen(t0, t0 + saf.flash_window_s + 0.1, base_b)
                 moved = math.hypot(x - pose0[0], y - pose0[1]) if pose0 else 0.0
-                if not flash and moved < saf.missed_motion_m and (L0 or R0):
+                if saf.flash_check and not flash and moved < saf.missed_motion_m and (L0 or R0):
                     status = "missed"
                     break
             L, R = spec.level_at(el + 0.5 * self.period_s())
@@ -408,6 +474,13 @@ class Session:
                         self.event("skipped", f"seg {i}")
                         break
                     self.wait_for_marker()
+                    if self.cfg.recentre.enabled:
+                        if not any(self._recentre(i) == "done" for _ in range(self.cfg.recentre.tries)):
+                            self.warn(f"seg {i} skipped: re-centring failed {self.cfg.recentre.tries} times "
+                                      "(rerun it with --only)")
+                            self.event("skipped", f"seg {i} (re-centre failed)")
+                            break
+                        self.wait_for_marker()
                     self.stop(i, "pre_rest")
                     self.clock.sleep(spec.rest_s)
                     status = self.run_drive(i, attempt, spec)

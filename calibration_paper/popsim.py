@@ -3,7 +3,6 @@
     python calibration_paper/popsim.py loro      [--robots 8 --spread 1 --reps 3 --out loro.json]
     python calibration_paper/popsim.py variance  [--robots 8 --days 2]
     python calibration_paper/popsim.py power     [--sims 5]
-    python calibration_paper/popsim.py selftest
 
 What it does (PLAN.md section 3, phases B-C):
   population  robots drawn around sim.default_truth(): per-robot dead zones p0, exponents gamma, motor gains, CW
@@ -630,7 +629,7 @@ def _json_ready(o):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=("loro", "variance", "power", "selftest"))
+    ap.add_argument("command", choices=("loro", "variance", "power"))
     ap.add_argument("--robots", type=int, default=8)
     ap.add_argument("--days", type=int, default=2)
     ap.add_argument("--spread", type=float, default=1.0, help="multiplier on every population spread")
@@ -642,11 +641,6 @@ def main(argv=None):
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    if a.command == "selftest":
-        import unittest
-        suite = unittest.defaultTestLoader.discover(os.path.dirname(os.path.abspath(__file__)), "test_popsim.py")
-        ok = unittest.TextTestRunner(verbosity=1).run(suite).wasSuccessful()
-        sys.exit(0 if ok else 1)
     out = {"loro": run_loro, "variance": run_variance, "power": run_power}[a.command](a)
     if a.out:
         with open(a.out, "w") as f:

@@ -1,0 +1,26 @@
+{
+  "_comment": "The lab rig with graspion_tracking's interim v4 (calib_2026-11-12_interim_v4/README.txt; in progress, the 1 mm gates miss narrowly). Reference markers: the 8 arena markers flat on the plate at the view's edges, from arena.json. Arena: where the robot's centre stays 31 mm clear of the marker papers (x 86..860 mm, y 87..633 mm, as arena_extent_v4.py gives). Camera: Basler through pypylon, the fixed view 2700 x 2064 at (192, 0), 20 ms, 5 dB (also saved in the camera as UserSet1); the tracker kept up with all ~50 fps in a 10 s check on 2026-11-12. camera_height_m is only a fallback, since the pose comes from K and the markers. Bot: '90' is only the label run --bot uses (ir_drive_rx has no calib_bot IR ID; the remote addresses slot 63); marker_height is the tag face above the plate (22.9 mm from the STLs: replace with the ruler reading); led_offset null because the tag covers the sync LED. Bridge: the teammate's ir_remote_tx on W10nY (COM5) driving a robot that runs ir_drive_rx; slot 63 reaches every robot in IR range.",
+  "arena": {"xmin": 0.086, "xmax": 0.860, "ymin": 0.087, "ymax": 0.633, "margin": 0.02, "home": null},
+  "reference_markers_file": "calib_2026-11-12_interim_v4/arena.json",
+  "camera": {
+    "backend": "pylon",
+    "window": {"offset_x": 192, "offset_y": 0, "width": 2700, "height": 2064},
+    "exposure_us": 20000,
+    "gain_db": 5.0,
+    "fps": 50,
+    "intrinsics": "calib_2026-11-12_interim_v4/intrinsics.json",
+    "camera_height_m": 0.942
+  },
+  "bridge": {"type": "ir_remote_tx", "port": "COM5", "period_ms": 110, "slot": 63},
+  "bots": {
+    "90": {
+      "marker_id": 10,
+      "marker_size_m": 0.020066,
+      "marker_height": 0.0229,
+      "marker_offset": [0.0, 0.0],
+      "marker_yaw": 0.0,
+      "led_offset": null,
+      "reference_point": "marker centre (set marker_offset to use the body centre)"
+    }
+  }
+}
