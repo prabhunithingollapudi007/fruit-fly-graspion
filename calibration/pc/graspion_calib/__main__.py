@@ -8,6 +8,7 @@
                   re-centres the bot before every segment; --only picks segments
   track           tracker only: live camera or a recorded video -> tracker CSV
   analyze         session folder(s) -> twists, forward map, inverse map (report.py)
+  gridmap         segments_fit.csv -> grid lookup map and its inverse (grid_map.py), e.g. for hw_fig8
 """
 from __future__ import annotations
 
@@ -331,6 +332,18 @@ def cmd_analyze(a):
     print(f"full results in {a.out}/calib.json")
 
 
+def cmd_gridmap(a):
+    from .grid_map import GridMap
+    g = GridMap.from_segments(a.segments)
+    g.save(a.out)
+    cnt = g.counts
+    print(f"wrote {a.out}: {g.meta['segments']} segments in {int((cnt > 0).sum())} of {cnt.size} cells, "
+          f"filled {g.meta['filled_cells'] or 'none'}")
+    for v, w in ((0.05, 0.0), (0.05, 0.3), (0.05, -0.5), (0.03, 0.0), (0.0, 1.5)):
+        L, R, pu, pw = g.drive_for(v, w)
+        print(f"  target {100 * v:.1f} cm/s {w:+.2f} rad/s -> drive ({L}, {R}): expected {100 * pu:.1f} cm/s {pw:+.2f} rad/s")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="graspion_calib", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -382,6 +395,11 @@ def main(argv=None):
     p.add_argument("sessions", nargs="+"); p.add_argument("--out", required=True)
     p.add_argument("--bootstrap", type=int, default=50)
     p.set_defaults(fn=cmd_analyze)
+
+    p = sub.add_parser("gridmap", help="grid lookup map from segments_fit.csv (grid_map.py)")
+    p.add_argument("segments", nargs="+", help="segments_fit.csv of analyze (several are pooled)")
+    p.add_argument("--out", required=True)
+    p.set_defaults(fn=cmd_gridmap)
 
 
     a = ap.parse_args(argv)

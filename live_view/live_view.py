@@ -23,6 +23,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "calibration", "pc"))
 from graspion_calib.forward_map import PowerLawMap  # noqa: E402
+from graspion_calib.grid_map import load_map  # noqa: E402
 from graspion_calib.geometry import BotGeometry  # noqa: E402
 
 A, B, C = 4.6e-4, 0.012, 0.0031          # u1 per unit drive past the dead zone; turn per motor; right veer
@@ -138,11 +139,11 @@ class View:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("session")
-    ap.add_argument("--map", help="forward_map.json from analyze (default: the rough PRIOR)")
+    ap.add_argument("--map", help="forward_map.json from analyze or grid_map.json from gridmap (default: the rough PRIOR)")
     ap.add_argument("--keep", type=int, default=6, help="finished segments drawn in grey")
     ap.add_argument("--once", metavar="PNG", help="draw the session as it is now into this image and exit")
     a = ap.parse_args()
-    m = PowerLawMap.load(a.map) if a.map else PRIOR
+    m = load_map(a.map) if a.map else PRIOR
     d = a.session
     while not (os.path.exists(os.path.join(d, "session.json")) and os.path.exists(os.path.join(d, "schedule.json"))):
         print(f"waiting for {d} ...")

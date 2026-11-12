@@ -134,7 +134,8 @@ class RemoteTxBridge:
     def __init__(self, port, baud=115200, period_ms=110, slot=63, timeout_s=1.0, ser=None, now=None, sleep=None):
         if ser is None:
             import serial
-            ser = serial.Serial(port, baud, timeout=timeout_s)
+            # a COM port, or a URL such as socket://host.docker.internal:7000 (serial_bridge.ps1 from a container)
+            ser = serial.serial_for_url(port, baudrate=baud, timeout=timeout_s)
         self._ser, self._now, self._sleep = ser, now or time.perf_counter, sleep or time.sleep
         self.period_s = int(period_ms) / 1000.0
         self._last_req = -1e9
