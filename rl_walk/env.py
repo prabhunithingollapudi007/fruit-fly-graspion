@@ -56,52 +56,36 @@ def make_obs(pose, goal, hist_LR):
                            (np.asarray(hist_LR, float) / 120.0).ravel()]).astype(np.float32)
 
 
-class GoalEnv(gym.Env):
-    """Drive the tag to a goal within `goal_tol`; reward = progress [cm], -0.01 per tick, +10 on arrival,
-    -10 on leaving the arena. Episodes last at most `t_max` seconds."""
+class PlantEnv(gym.Env):
+    """The identified plant (module docstring), shared by GoalEnv and track_env.TrackEnv: 81 discrete actions,
+    `pose` of the tag, time `t`, the last `n_hist` actions in `hist`."""
 
-    def __init__(self, randomize=True, goal_tol=0.03, t_max=30.0, n_hist=2, seed=None, ranges=None):
+    def __init__(self, randomize=True, n_hist=2, seed=None, ranges=None):
         """ranges: overrides of RANDOM entries (train.py's stress tests outside the training ranges)."""
         self.ranges = {**RANDOM, **(ranges or {})}
         self.LR, self.cells0 = load_cells()
         self.cells = self.cells0
         self.action_space = gym.spaces.Discrete(len(self.LR))
-        self.n_hist = n_hist
-        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (9 + 2 * n_hist,), np.float32)
-        self.randomize, self.goal_tol, self.t_max = randomize, goal_tol, t_max
+        self.n_hist, self.randomize = n_hist, randomize
         self.rng = np.random.default_rng(seed)
 
-    # ------------------------------------------------------------------ helpers
     def _sample(self, lo_hi):
         return self.rng.uniform(*lo_hi)
 
-    def _random_point(self):
-        return np.array([self.rng.uniform(ARENA[0, 0] + MARGIN, ARENA[0, 1] - MARGIN),
-                         self.rng.uniform(ARENA[1, 0] + MARGIN, ARENA[1, 1] - MARGIN)])
-
-    def _obs(self):
-        return make_obs(self.pose, self.goal, self.LR[self.hist])
-
-    # ------------------------------------------------------------------ gym API
-    def reset(self, seed=None, options=None):
+    def _reset_plant(self, seed=None):
+        """A new plant for the episode; the subclass sets `pose` afterwards."""
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        p = {k: (self._sample(self.ranges[k]) if self.randomize else v) for k, v in NOMINAL.items()}
-        self.p = p
-        self.cells = self.cells0 + p["cell_err"] * self.rng.normal(0, CELL_SD, self.cells0.shape)
+        self.p = {k: (self._sample(self.ranges[k]) if self.randomize else v) for k, v in NOMINAL.items()}
+        self.cells = self.cells0 + self.p["cell_err"] * self.rng.normal(0, CELL_SD, self.cells0.shape)
         self.cells[0] = 0.0
-        self.pose = np.array([*self._random_point(), self.rng.uniform(-np.pi, np.pi)])
-        self.goal = self._random_point()
-        while np.hypot(*(self.goal - self.pose[:2])) < 0.10:
-            self.goal = self._random_point()
         self.t = 0.0
         self.queue = [(-1.0, np.zeros(3))]      # (time it acts from, twist) of every command still relevant
         self.twist = np.zeros(3)                # lagged twist
         self.hist = [0] * self.n_hist
-        self.dist = np.hypot(*(self.goal - self.pose[:2]))
-        return self._obs(), {}
 
-    def step(self, action):
+    def _advance(self, action):
+        """Send `action` and run the plant for one control tick."""
         p = self.p
         tw = self.cells[int(action)] * [p["gv"], p["gv"], p["gw"]]
         if action != 0:
@@ -127,10 +111,42 @@ class GoalEnv(gym.Env):
             self.t += SUB
         self.pose = np.array([x, y, (th + np.pi) % (2 * np.pi) - np.pi])
 
+    def outside(self):
+        x, y = self.pose[:2]
+        return not (ARENA[0, 0] <= x <= ARENA[0, 1] and ARENA[1, 0] <= y <= ARENA[1, 1])
+
+
+class GoalEnv(PlantEnv):
+    """Drive the tag to a goal within `goal_tol`; reward = progress [cm], -0.01 per tick, +10 on arrival,
+    -10 on leaving the arena. Episodes last at most `t_max` seconds."""
+
+    def __init__(self, randomize=True, goal_tol=0.03, t_max=30.0, n_hist=2, seed=None, ranges=None):
+        super().__init__(randomize, n_hist, seed, ranges)
+        self.observation_space = gym.spaces.Box(-np.inf, np.inf, (9 + 2 * n_hist,), np.float32)
+        self.goal_tol, self.t_max = goal_tol, t_max
+
+    def _random_point(self):
+        return np.array([self.rng.uniform(ARENA[0, 0] + MARGIN, ARENA[0, 1] - MARGIN),
+                         self.rng.uniform(ARENA[1, 0] + MARGIN, ARENA[1, 1] - MARGIN)])
+
+    def _obs(self):
+        return make_obs(self.pose, self.goal, self.LR[self.hist])
+
+    def reset(self, seed=None, options=None):
+        self._reset_plant(seed)
+        self.pose = np.array([*self._random_point(), self.rng.uniform(-np.pi, np.pi)])
+        self.goal = self._random_point()
+        while np.hypot(*(self.goal - self.pose[:2])) < 0.10:
+            self.goal = self._random_point()
+        self.dist = np.hypot(*(self.goal - self.pose[:2]))
+        return self._obs(), {}
+
+    def step(self, action):
+        self._advance(action)
         dist = np.hypot(*(self.goal - self.pose[:2]))
         reward = 100 * (self.dist - dist) - 0.01
         self.dist = dist
-        out = not (ARENA[0, 0] <= x <= ARENA[0, 1] and ARENA[1, 0] <= y <= ARENA[1, 1])
+        out = self.outside()
         reached = dist < self.goal_tol
         if reached:
             reward += 10
@@ -162,15 +178,19 @@ class GreedyMap:
                       (-u1 * (np.cos(th1) - np.cos(th)) + u2 * (np.sin(th1) - np.sin(th))) / ws)
         return np.stack([x + dx, y + dy, th1], -1)
 
-    def __call__(self, env):
-        # roll the pose forward through the delay with the commands already sent (oldest first)
-        # the command sent k ticks ago acts on [-k*tick + delay, -(k-1)*tick + delay], clipped to [0, delay]
+    def predicted_pose(self, env):
+        """The pose when a command sent now starts to act: env.pose rolled through the commands in flight.
+        The command sent k ticks ago acts on [-k*tick + delay, -(k-1)*tick + delay], clipped to [0, delay]."""
         pose = env.pose.copy()
         for k in range(len(env.hist), 0, -1):
             t0 = max(0.0, -k * self.tick + self.delay)
             t1 = min(self.delay, -(k - 1) * self.tick + self.delay)
             if t1 > t0:
                 pose = self._arc(pose, self.cells[env.hist[-k]], t1 - t0)
+        return pose
+
+    def __call__(self, env):
+        pose = self.predicted_pose(env)
         ends = self._arc(np.broadcast_to(pose, (len(self.cells), 3)), self.cells, self.h)
         d = np.hypot(ends[:, 0] - env.goal[0], ends[:, 1] - env.goal[1])
         # facing the goal counts too, and standing still is never chosen: with distance alone it stalled on every
