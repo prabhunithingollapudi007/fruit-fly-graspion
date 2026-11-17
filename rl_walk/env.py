@@ -26,6 +26,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ARENA = np.array([[0.086, 0.860], [0.087, 0.633]])
 MARGIN = 0.08          # spawn and goal distance from the arena edge [m]
 SUB = 0.01             # integration step [s]
+START = 0.15           # how long a command counts as new after it replaced a different one [s] (residual.py)
 NOISE_SD = np.array([0.013, 0.007, 0.65])
 CELL_SD = np.array([0.007, 0.0035, 0.3])   # per-cell map error at cell_err = 1
 NOMINAL = dict(delay=0.17, jitter=0.0, tau=0.02, tick=0.14, noise=1.0, gv=1.0, gw=1.0, wbias=0.0, cell_err=0.0)
@@ -60,10 +61,28 @@ class PlantEnv(gym.Env):
     """The identified plant (module docstring), shared by GoalEnv and track_env.TrackEnv: 81 discrete actions,
     `pose` of the tag, time `t`, the last `n_hist` actions in `hist`."""
 
-    def __init__(self, randomize=True, n_hist=2, seed=None, ranges=None):
-        """ranges: overrides of RANDOM entries (train.py's stress tests outside the training ranges)."""
-        self.ranges = {**RANDOM, **(ranges or {})}
+    def __init__(self, randomize=True, n_hist=2, seed=None, ranges=None, residual=None):
+        """ranges: overrides of RANDOM entries (train.py's stress tests outside the training ranges).
+        residual: a correction of the plant fitted from robot logs (residual.py's json, or its dict): measured cell
+        twists in place of the map's, a twist added during the first START seconds after a change of command, the
+        dead time and the noise level. The randomisation then spreads around the corrected plant."""
         self.LR, self.cells0 = load_cells()
+        self.start0 = np.zeros_like(self.cells0)
+        self.noise_sd, self.nominal, base = NOISE_SD, dict(NOMINAL), dict(RANDOM)
+        if residual is not None:
+            r = json.load(open(residual)) if isinstance(residual, (str, os.PathLike)) else residual
+            self.cells0 = self.cells0.copy()
+            for k, v in {**r.get("other_cells", {}), **r.get("cells", {})}.items():
+                self.cells0[int(k)] = v
+            for k, v in r.get("start", {}).items():
+                self.start0[int(k)] = v
+            self.cells0[0] = self.start0[0] = 0.0
+            self.noise_sd = np.array(r.get("noise_sd", NOISE_SD), float)
+            if "delay" in r:                              # keep the range's shape around the fitted dead time
+                shift = r["delay"] - NOMINAL["delay"]
+                self.nominal["delay"] = r["delay"]
+                base["delay"] = (max(0.02, RANDOM["delay"][0] + shift), RANDOM["delay"][1] + shift)
+        self.ranges = {**base, **(ranges or {})}
         self.cells = self.cells0
         self.action_space = gym.spaces.Discrete(len(self.LR))
         self.n_hist, self.randomize = n_hist, randomize
@@ -76,33 +95,41 @@ class PlantEnv(gym.Env):
         """A new plant for the episode; the subclass sets `pose` afterwards."""
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-        self.p = {k: (self._sample(self.ranges[k]) if self.randomize else v) for k, v in NOMINAL.items()}
+        self.p = {k: (self._sample(self.ranges[k]) if self.randomize else v) for k, v in self.nominal.items()}
         self.cells = self.cells0 + self.p["cell_err"] * self.rng.normal(0, CELL_SD, self.cells0.shape)
         self.cells[0] = 0.0
         self.t = 0.0
-        self.queue = [(-1.0, np.zeros(3))]      # (time it acts from, twist) of every command still relevant
+        # (time it acts from, twist, twist while it is new, whether it changed the command) of every command
+        # still relevant; t_new: when the command in force replaced a different one
+        self.queue = [(-1.0, np.zeros(3), np.zeros(3), False)]
+        self.t_new = -1e9
         self.twist = np.zeros(3)                # lagged twist
         self.hist = [0] * self.n_hist
 
     def _advance(self, action):
         """Send `action` and run the plant for one control tick."""
         p = self.p
-        tw = self.cells[int(action)] * [p["gv"], p["gv"], p["gw"]]
+        gains = np.array([p["gv"], p["gv"], p["gw"]])
+        tw = self.cells[int(action)] * gains
         if action != 0:
             tw = tw + [0, 0, p["wbias"]]
+        changed = int(action) != self.hist[-1]
         # acts after the episode's dead time plus this command's jitter, never before the command sent before it
         t_act = self.t + max(0.0, p["delay"] + self.rng.uniform(-1, 1) * p["jitter"])
-        self.queue.append((max(t_act, self.queue[-1][0]), tw))
+        self.queue.append((max(t_act, self.queue[-1][0]), tw, tw + self.start0[int(action)] * gains, changed))
         self.hist = self.hist[1:] + [int(action)]
         tick = p["tick"] if not self.randomize else self.rng.uniform(*self.ranges["tick"])
-        noise = self.rng.normal(0, NOISE_SD * p["noise"])
+        noise = self.rng.normal(0, self.noise_sd * p["noise"])
         a = SUB / (p["tau"] + SUB)
         x, y, th = self.pose
         for _ in range(int(round(tick / SUB))):
             # the command in force: the last one whose dead time has passed
             while len(self.queue) > 1 and self.queue[1][0] <= self.t + 1e-9:
                 self.queue.pop(0)
-            self.twist += a * (self.queue[0][1] - self.twist)
+                if self.queue[0][3]:
+                    self.t_new = self.queue[0][0]
+            target = self.queue[0][2] if self.t - self.t_new < START - 1e-9 else self.queue[0][1]
+            self.twist += a * (target - self.twist)
             u1, u2, w = self.twist + (noise if np.any(self.queue[0][1]) else 0.0)  # no wobble when stopped
             c, s = np.cos(th), np.sin(th)
             x += (u1 * c - u2 * s) * SUB
@@ -120,8 +147,8 @@ class GoalEnv(PlantEnv):
     """Drive the tag to a goal within `goal_tol`; reward = progress [cm], -0.01 per tick, +10 on arrival,
     -10 on leaving the arena. Episodes last at most `t_max` seconds."""
 
-    def __init__(self, randomize=True, goal_tol=0.03, t_max=30.0, n_hist=2, seed=None, ranges=None):
-        super().__init__(randomize, n_hist, seed, ranges)
+    def __init__(self, randomize=True, goal_tol=0.03, t_max=30.0, n_hist=2, seed=None, ranges=None, residual=None):
+        super().__init__(randomize, n_hist, seed, ranges, residual)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (9 + 2 * n_hist,), np.float32)
         self.goal_tol, self.t_max = goal_tol, t_max
 

@@ -83,9 +83,9 @@ def make_track_obs(pose, ref, t, hist_LR):
 
 class TrackEnv(PlantEnv):
     def __init__(self, shapes=("circle", "figure8"), randomize=True, t_max=30.0, n_hist=2, seed=None, ranges=None,
-                 ref=None, switch_cost=0.3):
-        """shapes: what reset() draws from; ref: a fixed reference instead (benchmark())."""
-        super().__init__(randomize, n_hist, seed, ranges)
+                 ref=None, switch_cost=0.3, residual=None):
+        """shapes: what reset() draws from; ref: a fixed reference instead (benchmark()); residual: see PlantEnv."""
+        super().__init__(randomize, n_hist, seed, ranges, residual)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (2 * len(LOOK) + 4 + 2 * n_hist,), np.float32)
         self.shapes, self.t_max, self.fixed_ref, self.switch_cost = tuple(shapes), t_max, ref, switch_cost
 

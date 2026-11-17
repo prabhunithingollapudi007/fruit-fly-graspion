@@ -1,5 +1,9 @@
-"""Fit the loop delay and motor lag from hw_fig8 run logs, then replay the logged PWM commands open loop through
-grid map + delay + lag and compare with the tracked pose (the sim-to-real gate of FEASIBILITY.md §5.4).
+"""Replay the PWM commands logged in hw_fig8 runs open loop through grid map + delay + lag and compare with the
+tracked pose at 1 s and 3 s (the sim-to-real gate of FEASIBILITY.md §5.4; multi-step prediction error as in
+Seegmiller et al. 2013). Delay and lag come from step_fit.py, not from these runs (--fit shows why).
+
+What it supports: on the one run that stays on the measured map (20261112_152628, 95 s), the plant predicts the
+robot far better than standing still. One run, one day, one robot; the 11-11 runs drive off the map.
 
 Plant: the twist (u1, u2, omega) of the tracked point is the grid map at the last PWM pair sent at least `delay`
 before, passed through a first-order lag `tau`, scaled by gains (gv, gw). Battery is ideal (map at nominal).

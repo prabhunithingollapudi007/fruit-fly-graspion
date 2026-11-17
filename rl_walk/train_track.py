@@ -61,6 +61,8 @@ def main():
     ap.add_argument("--envs", type=int, default=8)
     ap.add_argument("--eval-only", action="store_true")
     ap.add_argument("--n-eval", type=int, default=100)
+    ap.add_argument("--residual", help="a plant correction fitted from robot logs (residual.py); training and "
+                    "evaluation then run on the corrected plant")
     ap.add_argument("--switch-cost", type=float, default=0.3, help="reward taken off when the command changes")
     a = ap.parse_args()
 
@@ -72,7 +74,7 @@ def main():
     path = os.path.join(OUT, f"ppo_{a.name}.zip")
     shapes = tuple(a.shapes.split(","))
     if not a.eval_only:
-        venv = make_vec_env(lambda: TrackEnv(shapes=shapes, switch_cost=a.switch_cost), n_envs=a.envs, vec_env_cls=SubprocVecEnv, seed=0)
+        venv = make_vec_env(lambda: TrackEnv(shapes=shapes, switch_cost=a.switch_cost, residual=a.residual), n_envs=a.envs, vec_env_cls=SubprocVecEnv, seed=0)
         kw = dict(n_steps=512, batch_size=1024, gamma=0.99, gae_lambda=0.95, ent_coef=0.01, learning_rate=3e-4,
                   device="cpu")
         if a.init:
@@ -86,20 +88,21 @@ def main():
     ppo = lambda env, obs: int(model.predict(obs, deterministic=True)[0])
     greedy = GreedyTrack()
     base = lambda env, obs: greedy(env)
-    cases = {"random circles": dict(shapes=("circle",)), "random figure-8s": dict(shapes=("figure8",)),
-             "benchmark circle (r 15 cm, 20 s)": dict(ref=benchmark("circle")),
-             "benchmark figure-8 (50 x 30 cm, 40 s)": dict(ref=benchmark("figure8"))}
+    R = dict(residual=a.residual)
+    cases = {"random circles": dict(shapes=("circle",), **R), "random figure-8s": dict(shapes=("figure8",), **R),
+             "benchmark circle (r 15 cm, 20 s)": dict(ref=benchmark("circle"), **R),
+             "benchmark figure-8 (50 x 30 cm, 40 s)": dict(ref=benchmark("figure8"), **R)}
     print(f"policy {path}; plant randomised as in training")
     for name, kw in cases.items():
         print(f"  {name:38s} PPO   : {evaluate(ppo, a.n_eval, **kw)}")
         print(f"  {'':38s} greedy: {evaluate(base, a.n_eval, **kw)}")
     print("benchmark figure-8, plant at its nominal values:")
-    print(f"  {'':38s} PPO   : {evaluate(ppo, a.n_eval, ref=benchmark('figure8'), randomize=False)}")
-    print(f"  {'':38s} greedy: {evaluate(base, a.n_eval, ref=benchmark('figure8'), randomize=False)}")
+    print(f"  {'':38s} PPO   : {evaluate(ppo, a.n_eval, ref=benchmark('figure8'), randomize=False, **R)}")
+    print(f"  {'':38s} greedy: {evaluate(base, a.n_eval, ref=benchmark('figure8'), randomize=False, **R)}")
     print("benchmark figure-8, outside the training ranges:")
     for name, ranges in STRESS.items():
-        print(f"  {name:38s} PPO   : {evaluate(ppo, a.n_eval, ref=benchmark('figure8'), ranges=ranges)}")
-        print(f"  {'':38s} greedy: {evaluate(base, a.n_eval, ref=benchmark('figure8'), ranges=ranges)}")
+        print(f"  {name:38s} PPO   : {evaluate(ppo, a.n_eval, ref=benchmark('figure8'), ranges=ranges, **R)}")
+        print(f"  {'':38s} greedy: {evaluate(base, a.n_eval, ref=benchmark('figure8'), ranges=ranges, **R)}")
 
 
 if __name__ == "__main__":

@@ -40,8 +40,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 class SimRig:
     """The env's plant (delay, lag, noise) in place of camera and IR; time is the env's clock."""
 
-    def __init__(self, randomize, seed):
-        self.env = GoalEnv(randomize=randomize, seed=seed)
+    def __init__(self, randomize, seed, residual=None):
+        self.env = GoalEnv(randomize=randomize, seed=seed, residual=residual)
         self.env.reset(seed=seed)
 
     def pose(self, tick):
@@ -53,6 +53,9 @@ class SimRig:
     def stop(self):
         for _ in range(2):              # until the last drive has passed the dead time
             self.env._advance(0)
+
+    def set_view(self, **kw):
+        pass
 
     def close(self):
         pass
@@ -114,6 +117,49 @@ class LiveRig:
         # "unseen" counts from now, so a tag missing at the start waits --abort-s before the run gives up
         self.last, self.last_seen, self.last_ctrl = None, time.monotonic(), 0.0
         self.sent_a, self.sent_t = 0, -1e9
+        # live view (hw_fig8's): the camera image with the arena, the reference, the target and the robot, drawn at
+        # the tag's height, refreshed at most 8 times a second so the control loop keeps its rate
+        self.preview = None
+        self.view = {"t": 0.0, "target": None, "path": None, "lines": [f"{a.task} {a.mode}: waiting for the tag"]}
+        if a.preview_port:
+            import cv2
+            from graspion_tracking.calib_live import Preview, put_lines, to_preview
+            self.cv2, self.put_lines, self.to_preview = cv2, put_lines, to_preview
+            self.proj = lambda pts: cam.project(np.asarray(pts, float), cal.pose.rvec, cal.pose.tvec)  # noqa: E731
+            (x0, x1), (y0, y1), h = ARENA[0], ARENA[1], self.tag.height
+            self.arena_px = self.proj([[x0, y0, h], [x1, y0, h], [x1, y1, h], [x0, y1, h]])
+            self.preview = Preview(a.preview_port, title=f"rl_walk {a.task} {a.mode}")
+            print(f"live view: http://localhost:{self.preview.port}/", flush=True)
+
+    def set_view(self, target=None, path=None, lines=None):
+        """What the live view draws: the target point (x, y), the reference path ((n, 2) points), the status lines."""
+        if self.preview is None:
+            return
+        h = self.tag.height
+        if target is not None:
+            self.view["target"] = self.proj([[target[0], target[1], h]])[0]
+        if path is not None:
+            self.view["path"] = self.proj(np.column_stack([path, np.full(len(path), h)]))
+        if lines is not None:
+            self.view["lines"] = lines
+
+    def show(self, gray, seen):
+        cv2, v, h = self.cv2, self.view, self.tag.height
+        img, s = self.to_preview(gray)
+        pt = lambda p: (int(round(p[0] * s)), int(round(p[1] * s)))  # noqa: E731
+        cv2.polylines(img, [np.round(self.arena_px * s).astype(np.int32)], True, (255, 128, 0), 2, cv2.LINE_AA)
+        if v["path"] is not None:
+            cv2.polylines(img, [np.round(v["path"] * s).astype(np.int32)], True, (0, 200, 255), 2, cv2.LINE_AA)
+        if v["target"] is not None:
+            cv2.circle(img, pt(v["target"]), 8, (0, 0, 255), -1, cv2.LINE_AA)
+        if self.last is not None:
+            x, y, yaw = self.last
+            c, tip = self.proj([[x, y, h], [x + 0.04 * math.cos(yaw), y + 0.04 * math.sin(yaw), h]])
+            col = (0, 255, 0) if seen else (0, 165, 255)
+            cv2.circle(img, pt(c), 10, col, 2, cv2.LINE_AA)
+            cv2.arrowedLine(img, pt(c), pt(tip), col, 2, cv2.LINE_AA, tipLength=0.35)
+        self.put_lines(img, v["lines"] + ["blue: arena, yellow: reference, red: target, green: robot"])
+        self.preview.publish(img, {"text": "\n".join(v["lines"])})
 
     def pose(self, tick):
         """Read frames until one control tick has passed; the newest sighting, and how old it is."""
@@ -126,6 +172,14 @@ class LiveRig:
                 self.last, self.last_seen = (o.x, o.y, o.yaw), now
             if self.link is not None:
                 self.link.drain()
+            if self.preview is not None and now - self.view["t"] > 0.125:
+                self.view["t"] = now
+                try:                                      # the view must never stop the control loop
+                    self.show(f.gray, o is not None)
+                except Exception as e:                    # noqa: BLE001
+                    if not self.view.get("warned"):
+                        print(f"live view error (the run goes on): {e!r}", flush=True)
+                        self.view["warned"] = True
             if now - self.last_ctrl >= tick:
                 self.last_ctrl = now
                 return now, self.last, now - self.last_seen
@@ -150,6 +204,8 @@ class LiveRig:
         if self.link is not None:
             self.link.stop()
             self.link.close()
+        if getattr(self, "preview", None) is not None:
+            self.preview.close()
         if getattr(self, "src", None) is not None:
             self.src.close()
         self.rx_log.close()
@@ -251,6 +307,7 @@ def main():
     ap.add_argument("--abort-s", type=float, default=6.0)
     ap.add_argument("--max-min", type=float, default=10.0, help="stop the run after this many minutes")
     ap.add_argument("--randomize", action="store_true", help="--mode sim: a randomised plant")
+    ap.add_argument("--plant", help="--mode sim: a plant correction (residual.py's json) for the simulated robot")
     ap.add_argument("--ws", default=str(HERE.parents[1] / "brainbot_ws"), help="brainbot_ws checkout")
     ap.add_argument("--calib", help="camera calibration (default: the ws's calib_2026-11-12_interim_v4)")
     ap.add_argument("--robot", default="udZn9")
@@ -258,6 +315,8 @@ def main():
     ap.add_argument("--exposure-us", type=float, default=18000)
     ap.add_argument("--gain-db", type=float, default=5.8)
     ap.add_argument("--out", default=str(HERE / "runs"))
+    ap.add_argument("--preview-port", type=int, default=8080,
+                    help="live view of the camera on http://localhost:<port>/ in dry and run mode, 0 = off")
     a = ap.parse_args()
 
     ref = None
@@ -286,9 +345,11 @@ def main():
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    rig = SimRig(a.randomize, a.seed) if a.mode == "sim" else LiveRig(a, out, stamp)
+    rig = SimRig(a.randomize, a.seed, a.plant) if a.mode == "sim" else LiveRig(a, out, stamp)
     rig.cmd_ms = a.cmd_ms
     rng = np.random.default_rng(a.seed)
+    if ref is not None:
+        rig.set_view(path=np.column_stack(ref.at(np.linspace(0, ref.T, 241))[:2]))
     if a.mode == "sim" and ref is not None:               # in sim, start 3 cm beside the reference, 0.3 rad off
         x0, y0, th0 = (float(v) for v in ref.at(0.0)[:3])
         rig.env.pose = np.array([x0 + 0.03, y0, th0 + 0.3])
@@ -299,7 +360,10 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: stop_flag.__setitem__("stop", True))
     log_f = open(out / f"deploy_{a.task}_{a.mode}_{stamp}.csv", "w", newline="")
     log = csv.writer(log_f)
-    log.writerow(["t", "task", "tx", "ty", "x", "y", "yaw", "pose_age", "dist", "action", "L", "R", "note"])
+    # x, y, yaw: the pose the policy saw (the sighting rolled forward by pose_age with the model); sx, sy, syaw:
+    # the sighting itself, taken at t - pose_age (what residual.py fits)
+    log.writerow(["t", "task", "tx", "ty", "x", "y", "yaw", "pose_age", "dist", "action", "L", "R", "sx", "sy",
+                  "syaw", "note"])
     print(f"{a.mode}: policy {policy}, tick {a.tick:.2f} s, arena x {ARENA[0, 0]:.3f}..{ARENA[0, 1]:.3f}"
           f" y {ARENA[1, 0]:.3f}..{ARENA[1, 1]:.3f} m", flush=True)
 
@@ -326,7 +390,7 @@ def main():
                     rig.stop()
                     hist = [0, 0]
                     sent.append((now, 0))
-                    log.writerow([f"{now:.3f}", gi, *[""] * 10, f"tag unseen {age:.1f} s: stop"])
+                    log.writerow([f"{now:.3f}", gi, *[""] * 13, f"tag unseen {age:.1f} s: stop"])
                     if age > a.abort_s:
                         reason = f"tag unseen for {a.abort_s:.0f} s"
                         stop_flag["stop"] = True
@@ -359,16 +423,21 @@ def main():
                 act = int(model.predict(task.obs(pose, now, LR[hist]), deterministic=True)[0])
                 L, R = LR[act].astype(int)
                 rig.send(act, L, R)
+                rig.set_view(target=(tx, ty), lines=[
+                    f"{a.mode}  {gi + 1}/{n_tasks}: {task.label}",
+                    f"{'error' if ref is not None else 'distance'} {dist * 100:5.1f} cm   command ({L}, {R})"
+                    f"{'' if a.mode == 'run' else '  (not sent)'}   t {now - t_task:5.1f} s"])
                 hist = hist[1:] + [act]
                 sent = sent[-8:] + [(now, act)]
                 log.writerow([f"{now:.3f}", gi, f"{tx:.4f}", f"{ty:.4f}", f"{x:.5f}", f"{y:.5f}",
-                              f"{yaw:.5f}", f"{age:.3f}", f"{dist:.4f}", act, L, R, ""])
+                              f"{yaw:.5f}", f"{age:.3f}", f"{dist:.4f}", act, L, R, f"{seen_pose[0]:.5f}",
+                              f"{seen_pose[1]:.5f}", f"{seen_pose[2]:.5f}", ""])
             rig.stop()
             took = now - t_task if t_task is not None else float("nan")
             results.append((outcome, took, best))
             if ref is None:
                 print(f"  {outcome} after {took:.1f} s, closest {best * 100:.1f} cm", flush=True)
-            log.writerow([f"{now:.3f}", gi, *[""] * 10, f"{outcome} after {took:.1f} s"])
+            log.writerow([f"{now:.3f}", gi, *[""] * 13, f"{outcome} after {took:.1f} s"])
             if stop_flag["stop"]:
                 break
             t_pause = time.monotonic()
