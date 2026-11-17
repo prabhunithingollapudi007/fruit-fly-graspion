@@ -8,7 +8,10 @@ simulation, orange = the lab's MPC, aqua = RL fine-tuned on the day's fitted pla
 Needs matplotlib.
 """
 import csv
+import glob
+import json
 import os
+import time
 
 import matplotlib
 matplotlib.use("Agg")
@@ -16,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from env import ARENA
-from track_env import Figure8
+from track_env import Figure8, PathRef
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS, OUT = os.path.join(HERE, "runs"), os.path.join(HERE, "figures")
@@ -206,6 +209,58 @@ def main():
     ax.set_ylabel("y [cm]")
     ax.set_title("Goal reaching on the robot: five goals in a row, each ring is the 3 cm target", pad=12, fontsize=12.5)
     save(fig, "goal_reaching.png")
+
+    # 6. paths drawn in the path editor (path_ui.py) and driven on the robot
+    drawn = drawn_runs()
+    if drawn:
+        fig, axes = plt.subplots(1, len(drawn), figsize=(5.9 * len(drawn), 4.7), squeeze=False)
+        (x0, x1), (y0, y1) = 100 * ARENA
+        for ax, (spec, log) in zip(axes[0], drawn):
+            q = json.load(open(spec))
+            ref = PathRef(q["points"], speed=q.get("speed", 0.045), closed=q.get("closed", False), w_max=q.get("w_max", 1.0))
+            rows = [r for r in csv.DictReader(open(log)) if r["sx"]]
+            ap = 100 * np.array([[float(r["sx"]), float(r["sy"])] for r in rows if r["task"] == "0"])
+            tr = [r for r in rows if r["task"] == "1"]
+            p = 100 * np.array([[float(r["sx"]), float(r["sy"])] for r in tr])
+            t = np.array([float(r["t"]) for r in tr])
+            e = 100 * np.hypot(*(p / 100 - np.array([[float(r["tx"]), float(r["ty"])] for r in tr])).T)
+            k = t - t[0] > 3
+            ax.add_patch(plt.Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=AXIS, lw=1.0))
+            ax.plot(100 * ref.xy[:, 0], 100 * ref.xy[:, 1], color=AXIS, lw=3.2, solid_capstyle="round", zorder=1)
+            if len(ap):
+                ax.plot(ap[:, 0], ap[:, 1], color=FT, lw=1.0, alpha=0.55, zorder=2)
+            ax.plot(p[:, 0], p[:, 1], color=FT, lw=1.7, zorder=3)
+            pts = 100 * np.asarray(q["points"])
+            ax.plot(pts[:, 0], pts[:, 1], "o", ms=4, mfc=SURFACE, mec=INK2, mew=1.0, zorder=4)
+            ax.text(pts[0, 0], pts[0, 1] - 2.2, "start", color=INK2, fontsize=9, ha="center", va="top")
+            ax.set_aspect("equal")
+            ax.set_xlim(x0 - 2, x1 + 2)
+            ax.set_ylim(y0 - 2, y1 + 2)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_visible(False)
+            ax.set_title(f"{len(pts)} waypoints, {100 * ref.length:.0f} cm in {ref.T:.0f} s", color=INK, pad=18)
+            ax.text(0, 1.02, f"median {np.median(e[k]):.1f} cm  ·  max {e[k].max():.1f} cm", transform=ax.transAxes,
+                    color=INK2, fontsize=9.5, va="bottom")
+        fig.suptitle("Paths drawn in the editor and driven on the robot: grey is the drawn path with its waypoints,\n"
+                     "aqua is the robot (the thin line is its approach to the start), the box is the arena",
+                     x=0.125, y=1.1, ha="left", fontsize=12.5, color=INK)
+        save(fig, "drawn_paths.png")
+
+
+def drawn_runs():
+    """(path json, deploy log) of every run started from the path editor: the log that began within a minute after
+    the path was saved."""
+    stamp = lambda name, a, b: time.mktime(time.strptime(os.path.basename(name)[a:b], "%Y%m%d_%H%M%S"))  # noqa: E731
+    logs = sorted(glob.glob(os.path.join(RUNS, "deploy_track_run_*.csv")))
+    out = []
+    for spec in sorted(glob.glob(os.path.join(RUNS, "paths", "path_*.json"))):
+        t0 = stamp(spec, 5, -5)
+        log = next((g for g in logs if 0 <= stamp(g, 17, -4) - t0 < 60), None)
+        if log:
+            out.append((spec, log))
+    return out
 
 
 if __name__ == "__main__":

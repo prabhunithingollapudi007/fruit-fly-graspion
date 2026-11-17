@@ -63,6 +63,8 @@ class PathRef:
     def __init__(self, points, speed=0.045, closed=False, w_max=1.0, ds=0.002):
         from scipy.interpolate import CubicSpline
         P = np.asarray(points, float).reshape(-1, 2)
+        if len(P) < 2:
+            raise ValueError("a path needs at least 2 points (3 for a closed one)")
         P = P[np.r_[True, np.hypot(*np.diff(P, axis=0).T) > 1e-4]]      # drop repeated points
         if closed and np.hypot(*(P[0] - P[-1])) > 1e-4:
             P = np.vstack([P, P[:1]])
