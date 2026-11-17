@@ -7,11 +7,15 @@ Camera, tracker and IR link are hw_fig8's (brainbot_ws, tools/hw_fig8).
     python rl_walk/deploy.py --mode run --n-goals 5 --port COM5     # the robot drives to goals (train.py's policy)
     python rl_walk/deploy.py --mode run --task track --shape circle --radius 0.15 --period 20
     python rl_walk/deploy.py --mode run --task track --shape figure8 --ax 0.25 --ay 0.15 --period 40 --loops 2
+    python rl_walk/deploy.py --mode run --task track --shape path --path runs/paths/my_path.json --approach
 
 --task goal: --goals "0.3,0.3 0.6,0.4" or --n-goals N random points (training's margins, >= 10 cm from the robot).
 --task track (train_track.py's policy): a circle or figure-8 around --center (default the arena's), entered at the
 point nearest the robot, for --loops periods; the error is the distance to the reference point of the moment, counted
 after the first 3 s. The run stops if the error passes 25 cm (the policy never trained beyond that).
+--shape path: a hand-drawn path (path_ui.py writes the json: points, speed, closed, w_max). An open path is run once
+from its first point, a closed one for --loops laps. --approach first drives to the start of the reference with the
+goal policy. --stop-file: the run stops as soon as that file exists (the path editor's Stop button).
 Safety: stop when the tag is unseen for --unseen-stop s, abort after --abort-s; abort when the tag, the sighting
 brought up to now, or the pose after the commands in flight leaves the arena the policy was trained in; stop after
 --max-min minutes (full charge, first 10 min); Ctrl-C stops; every pwm line lasts --cmd-ms, so the robot stops by
@@ -31,7 +35,7 @@ import time
 import numpy as np
 
 from env import ARENA, MARGIN, NOMINAL, GoalEnv, GreedyMap, load_cells, make_obs
-from track_env import EDGE, LOST, Circle, Figure8, make_track_obs, phase_near
+from track_env import EDGE, LOST, Circle, Figure8, PathRef, make_track_obs, phase_near
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -263,7 +267,8 @@ class TrackTask:
         self.ref, self.duration, self.label = ref, duration, label
 
     def start(self, now, pose):
-        self.t0, self.phase = now, phase_near(self.ref, *pose)
+        # an open path is run from its first point; anything periodic is entered at the nearest point
+        self.t0, self.phase = now, 0.0 if getattr(self.ref, "open", False) else phase_near(self.ref, *pose)
 
     def t_ref(self, now):
         return self.phase + now - self.t0
@@ -289,7 +294,11 @@ def main():
     ap.add_argument("--goal-tol", type=float, default=0.03)
     ap.add_argument("--goal-timeout", type=float, default=30.0)
     ap.add_argument("--pause", type=float, default=1.5, help="stop between goals [s]")
-    ap.add_argument("--shape", choices=("circle", "figure8"), default="circle")
+    ap.add_argument("--shape", choices=("circle", "figure8", "path"), default="circle")
+    ap.add_argument("--path", help="--shape path: json with points [[x, y], ...] in metres, speed [m/s], closed, w_max")
+    ap.add_argument("--approach", action="store_true",
+                    help="--task track: first drive to the start of the reference with the goal policy")
+    ap.add_argument("--stop-file", help="stop the run as soon as this file exists")
     ap.add_argument("--radius", type=float, default=0.15, help="circle radius [m]")
     ap.add_argument("--ccw", action="store_true", help="circle: counter-clockwise (default clockwise)")
     ap.add_argument("--ax", type=float, default=0.25, help="figure-8 half width in x [m]")
@@ -322,14 +331,21 @@ def main():
     ref = None
     if a.task == "track":
         cx, cy = a.center or ARENA.mean(1)
-        if a.shape == "circle":
+        if a.shape == "path":
+            import json
+            spec = json.load(open(a.path))
+            ref = PathRef(spec["points"], speed=spec.get("speed", 0.045), closed=spec.get("closed", False),
+                          w_max=spec.get("w_max", 1.0))
+            label = (f"drawn path, {'closed' if ref.closed else 'open'}, {100 * ref.length:.0f} cm in {ref.T:.0f} s"
+                     f"{' per lap' if ref.closed else ''}")
+        elif a.shape == "circle":
             ref = Circle(cx, cy, a.radius, a.period or 20.0, 1 if a.ccw else -1)
             label = f"circle r {a.radius * 100:.0f} cm, {'counter-' if a.ccw else ''}clockwise, {ref.T:.0f} s per lap"
         else:
             ref = Figure8(cx, cy, a.ax, a.ay, a.period or 40.0)
             label = f"figure-8 {200 * a.ax:.0f} x {200 * a.ay:.0f} cm, {ref.T:.0f} s per lap"
         rx, ry, _, rv, _ = ref.at(np.linspace(0, ref.T, 721))
-        label += f", {100 * rv.min():.1f}-{100 * rv.max():.1f} cm/s"
+        label += f", {100 * rv[rv > 0].min():.1f}-{100 * rv.max():.1f} cm/s"
         if (rx.min() < ARENA[0, 0] + EDGE or rx.max() > ARENA[0, 1] - EDGE or ry.min() < ARENA[1, 0] + EDGE
                 or ry.max() > ARENA[1, 1] - EDGE):
             raise SystemExit(f"the reference leaves the arena (it must stay {EDGE * 100:.0f} cm inside x "
@@ -341,6 +357,8 @@ def main():
     from stable_baselines3 import PPO
     policy = a.policy or str(HERE / "runs" / ("ppo_track.zip" if a.task == "track" else "ppo_goal.zip"))
     model = PPO.load(policy, device="cpu")
+    approach = ref is not None and a.approach
+    goal_model = PPO.load(str(HERE / "runs" / "ppo_goal.zip"), device="cpu") if approach else model
     LR, cells = load_cells()
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -350,11 +368,11 @@ def main():
     rng = np.random.default_rng(a.seed)
     if ref is not None:
         rig.set_view(path=np.column_stack(ref.at(np.linspace(0, ref.T, 241))[:2]))
-    if a.mode == "sim" and ref is not None:               # in sim, start 3 cm beside the reference, 0.3 rad off
+    if a.mode == "sim" and ref is not None and not approach:  # in sim, start 3 cm beside the reference, 0.3 rad off
         x0, y0, th0 = (float(v) for v in ref.at(0.0)[:3])
         rig.env.pose = np.array([x0 + 0.03, y0, th0 + 0.3])
     fixed = [np.array([float(v) for v in g.split(",")]) for g in a.goals.split()] if a.goals else None
-    n_tasks = 1 if ref is not None else len(fixed) if fixed else a.n_goals
+    n_tasks = (2 if approach else 1) if ref is not None else len(fixed) if fixed else a.n_goals
 
     stop_flag = {"stop": False}
     signal.signal(signal.SIGINT, lambda *_: stop_flag.__setitem__("stop", True))
@@ -364,6 +382,7 @@ def main():
     # the sighting itself, taken at t - pose_age (what residual.py fits)
     log.writerow(["t", "task", "tx", "ty", "x", "y", "yaw", "pose_age", "dist", "action", "L", "R", "sx", "sy",
                   "syaw", "note"])
+    print(f"log: {log_f.name}", flush=True)
     print(f"{a.mode}: policy {policy}, tick {a.tick:.2f} s, arena x {ARENA[0, 0]:.3f}..{ARENA[0, 1]:.3f}"
           f" y {ARENA[1, 0]:.3f}..{ARENA[1, 1]:.3f} m", flush=True)
 
@@ -371,16 +390,23 @@ def main():
     try:
         now, pose, age = rig.pose(a.tick)
         for gi in range(n_tasks):
-            if ref is not None:
-                task = TrackTask(ref, a.loops * ref.T, label)
+            if ref is not None and approach and gi == 0:
+                task = GoalTask([float(v) for v in ref.at(0.0)[:2]], a.goal_tol, a.goal_timeout)
+            elif ref is not None:
+                task = TrackTask(ref, ref.T + 1.0 if getattr(ref, "open", False) else a.loops * ref.T, label)
             else:
                 task = GoalTask(fixed[gi] if fixed else random_goal(rng, pose), a.goal_tol, a.goal_timeout)
             hist = [0, 0]
             sent = [(-1e9, 0)]                            # (time sent, action), for roll()
             t_task, best, outcome = None, float("inf"), "aborted"
             print(f"{gi + 1}/{n_tasks}: {task.label}", flush=True)
+            tracking = isinstance(task, TrackTask)
             while not stop_flag["stop"]:
                 now, pose, age = rig.pose(a.tick)
+                if a.stop_file and os.path.exists(a.stop_file):
+                    reason = "stopped from outside (stop file)"
+                    stop_flag["stop"] = True
+                    break
                 t_run0 = now if t_run0 is None else t_run0
                 if (now - t_run0) / 60 > a.max_min:
                     reason = f"{a.max_min:.0f} min run time reached (battery window)"
@@ -411,7 +437,7 @@ def main():
                 tx, ty = task.target(now)
                 dist = math.hypot(tx - x, ty - y)
                 best = min(best, dist)
-                if ref is not None and now - t_task > 3.0:
+                if tracking and now - t_task > 3.0:
                     errs.append(dist)
                 outcome = task.outcome(dist, now)
                 if outcome is not None:
@@ -420,7 +446,8 @@ def main():
                         stop_flag["stop"] = True
                     break
                 outcome = "aborted"
-                act = int(model.predict(task.obs(pose, now, LR[hist]), deterministic=True)[0])
+                act = int((model if tracking or ref is None else goal_model).predict(
+                    task.obs(pose, now, LR[hist]), deterministic=True)[0])
                 L, R = LR[act].astype(int)
                 rig.send(act, L, R)
                 rig.set_view(target=(tx, ty), lines=[
@@ -432,11 +459,15 @@ def main():
                 log.writerow([f"{now:.3f}", gi, f"{tx:.4f}", f"{ty:.4f}", f"{x:.5f}", f"{y:.5f}",
                               f"{yaw:.5f}", f"{age:.3f}", f"{dist:.4f}", act, L, R, f"{seen_pose[0]:.5f}",
                               f"{seen_pose[1]:.5f}", f"{seen_pose[2]:.5f}", ""])
+                log_f.flush()
             rig.stop()
             took = now - t_task if t_task is not None else float("nan")
             results.append((outcome, took, best))
-            if ref is None:
+            if not tracking:
                 print(f"  {outcome} after {took:.1f} s, closest {best * 100:.1f} cm", flush=True)
+            if not tracking and ref is not None and outcome != "reached" and not stop_flag["stop"]:
+                reason = f"the start of the reference was not reached ({outcome})"
+                stop_flag["stop"] = True
             log.writerow([f"{now:.3f}", gi, *[""] * 13, f"{outcome} after {took:.1f} s"])
             if stop_flag["stop"]:
                 break
@@ -446,8 +477,10 @@ def main():
     finally:
         rig.close()
         log_f.close()
-    if ref is not None:
-        e = 100 * np.array(errs) if errs else np.array([np.nan])
+    if ref is not None and not errs:
+        print(f"end: {reason}; the reference was not tracked long enough to score; log {log_f.name}", flush=True)
+    elif ref is not None:
+        e = 100 * np.array(errs)
         print(f"end: {reason}; {results[-1][0] if results else 'nothing run'} after "
               f"{results[-1][1] if results else 0:.0f} s; error median {np.median(e):.1f} cm, rms "
               f"{np.sqrt(np.mean(e ** 2)):.1f} cm, max {e.max():.1f} cm; log {log_f.name}", flush=True)

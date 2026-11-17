@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Path follower</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781; --grid: #e1e0d9;
+  --axis: #c3c2b7; --ref: #b4b2a9; --sim: #2a78d6; --robot: #eb6834; --border: rgba(11,11,11,.12);
+  --warn-bg: #faeeda; --warn-ink: #633806; --bad: #d03b3b; --good: #006300; --btn: #0b0b0b; --btn-ink: #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781; --grid: #2c2c2a;
+    --axis: #383835; --ref: #5f5e5a; --sim: #3987e5; --robot: #d95926; --border: rgba(255,255,255,.12);
+    --warn-bg: #412402; --warn-ink: #fac775; --bad: #e66767; --good: #0ca30c; --btn: #f0efec; --btn-ink: #0d0d0d;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { padding: 14px 20px 6px; }
+h1 { font-size: 18px; font-weight: 600; margin: 0; }
+header p { margin: 2px 0 0; color: var(--ink2); }
+main { display: flex; gap: 16px; padding: 10px 20px 24px; align-items: flex-start; flex-wrap: wrap; }
+.stage { flex: 1 1 560px; min-width: 320px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+#arena { display: block; width: 100%; border-radius: 10px; touch-action: none; cursor: crosshair; }
+.legend { display: flex; gap: 18px; flex-wrap: wrap; padding: 8px 12px; color: var(--ink2); font-size: 13px; }
+.legend i { display: inline-block; width: 22px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+aside { flex: 0 0 330px; display: flex; flex-direction: column; gap: 12px; }
+.card.pad { padding: 12px 14px; }
+h2 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--ink2); letter-spacing: .01em; }
+label.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0; }
+label.row span.val { color: var(--ink2); min-width: 78px; text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { flex: 1; min-width: 90px; }
+select, input[type=number], input[type=text] { font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; max-width: 170px; }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+button { font: inherit; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--ink); cursor: pointer; }
+button.primary { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
+button.danger { border-color: var(--bad); color: var(--bad); }
+button:disabled { opacity: .45; cursor: default; }
+table.facts { width: 100%; border-collapse: collapse; }
+table.facts td { padding: 2px 0; }
+table.facts td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+table.facts td:first-child { color: var(--ink2); }
+.warn { background: var(--warn-bg); color: var(--warn-ink); border-radius: 7px; padding: 6px 9px; margin-top: 8px; font-size: 13px; }
+.verdict { font-weight: 600; margin: 0 0 4px; }
+.verdict.good { color: var(--good); } .verdict.bad { color: var(--bad); }
+.small { color: var(--ink2); font-size: 13px; margin: 2px 0; }
+#errchart { display: block; width: 100%; height: 150px; }
+#cam { display: none; width: 100%; border-radius: 10px; margin-top: 12px; border: 1px solid var(--border); }
+pre#lines { margin: 6px 0 0; white-space: pre-wrap; color: var(--ink2); font: 12px/1.4 ui-monospace, Consolas, monospace; max-height: 96px; overflow: hidden; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Path follower</h1>
+  <p>Click to place waypoints, or drag to draw. Drag a point to move it, right-click a point to delete it. Then simulate, and run it on the robot.</p>
+</header>
+<main>
+  <div class="stage">
+    <div class="card">
+      <canvas id="arena" aria-label="The arena from above: the drawn path, the simulated path and the robot's path"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--ref)"></i>Your path (the reference)</span>
+        <span><i style="background:var(--sim)"></i>Simulated robot</span>
+        <span><i style="background:var(--robot)"></i>Real robot</span>
+        <span id="readout"></span>
+      </div>
+    </div>
+    <div class="card pad" style="margin-top:12px">
+      <h2>Distance to the reference point over time</h2>
+      <canvas id="errchart" aria-label="Tracking error over time for the simulated and the real robot"></canvas>
+    </div>
+    <img id="cam" alt="Live camera view of the arena">
+  </div>
+  <aside>
+    <div class="card pad">
+      <h2>Path</h2>
+      <label class="row">Speed <input id="speed" type="range" min="2" max="7" step="0.1" value="4.5"><span class="val" id="speedv"></span></label>
+      <label class="row">Slow down in turns above <input id="wmax" type="range" min="0.4" max="1.6" step="0.1" value="1.0"><span class="val" id="wmaxv"></span></label>
+      <label class="row"><span><input id="closed" type="checkbox"> Closed loop</span>
+        <span>laps <input id="loops" type="number" min="1" max="6" value="2" style="width:56px"></span></label>
+      <label class="row">Start from <select id="preset"><option value="">a preset…</option><option value="s">S-curve</option>
+        <option value="loop">Bean loop</option><option value="eight">Figure-8</option><option value="zig">Zigzag</option></select></label>
+      <div class="btns"><button id="undo">Undo point</button><button id="clear">Clear</button></div>
+      <table class="facts" id="facts" style="margin-top:10px"></table>
+      <div id="warnings"></div>
+    </div>
+    <div class="card pad">
+      <h2>Simulation</h2>
+      <label class="row">Policy <select id="policy"></select></label>
+      <label class="row">Simulated robot <select id="plant"></select></label>
+      <div class="btns"><button id="simulate" class="primary">Simulate</button><button id="replay" disabled>Replay</button></div>
+      <div id="simres" style="margin-top:10px"></div>
+    </div>
+    <div class="card pad">
+      <h2>Robot</h2>
+      <label class="row">IR sender port <input id="port" type="text" value="COM5" style="width:90px"></label>
+      <div class="btns"><button id="dry">Dry run (camera only)</button><button id="run" class="primary">Run on robot</button>
+        <button id="stop" class="danger" disabled>Stop</button></div>
+      <div id="robres" style="margin-top:10px"></div>
+      <pre id="lines"></pre>
+    </div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const S = { pts: [], path: null, start: null, summary: null, inside: true, sim: null, simIdx: 0, anim: null,
+            robot: null, cfg: null, drag: null, hoverT: null, polling: null };
+const PAD = 0.03;
+let W = 0, H = 0, win = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+function spec(extra) {
+  return Object.assign({ points: S.pts, speed: +$('speed').value / 100, closed: $('closed').checked, w_max: +$('wmax').value,
+    loops: +$('loops').value, policy: $('policy').value, plant: $('plant').value, port: $('port').value }, extra || {});
+}
+function toPx(x, y) { return [(x - win.x0) / (win.x1 - win.x0) * W, (win.y1 - y) / (win.y1 - win.y0) * H]; }
+function toWorld(px, py) { return [win.x0 + px / W * (win.x1 - win.x0), win.y1 - py / H * (win.y1 - win.y0)]; }
+function clampPt(p) {
+  const [[ax0, ax1], [ay0, ay1]] = S.cfg.arena, e = S.cfg.edge + 0.002;
+  return [Math.min(ax1 - e, Math.max(ax0 + e, p[0])), Math.min(ay1 - e, Math.max(ay0 + e, p[1]))];
+}
+
+function resize() {
+  const c = $('arena'), dpr = window.devicePixelRatio || 1;
+  W = c.clientWidth; H = Math.round(W * (win.y1 - win.y0) / (win.x1 - win.x0));
+  c.style.height = H + 'px'; c.width = W * dpr; c.height = H * dpr;
+  c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  const e = $('errchart'); e.width = e.clientWidth * dpr; e.height = e.clientHeight * dpr;
+  e.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw(); drawErr();
+}
+
+function line(g, pts, color, width, upTo) {
+  if (!pts || pts.length < 2) return;
+  g.beginPath();
+  const n = upTo == null ? pts.length : Math.min(pts.length, upTo + 1);
+  for (let i = 0; i < n; i++) { const [px, py] = toPx(pts[i][0], pts[i][1]); i ? g.lineTo(px, py) : g.moveTo(px, py); }
+  g.strokeStyle = color; g.lineWidth = width; g.lineJoin = g.lineCap = 'round'; g.stroke();
+}
+function dot(g, p, r, fill, ring) {
+  const [px, py] = toPx(p[0], p[1]);
+  g.beginPath(); g.arc(px, py, r, 0, 2 * Math.PI); g.fillStyle = fill; g.fill();
+  if (ring) { g.lineWidth = 2; g.strokeStyle = ring; g.stroke(); }
+}
+
+function draw() {
+  const g = $('arena').getContext('2d');
+  g.clearRect(0, 0, W, H);
+  const [[ax0, ax1], [ay0, ay1]] = S.cfg.arena, e = S.cfg.edge;
+  g.lineWidth = 1; g.strokeStyle = css('--grid');
+  for (let x = Math.ceil(win.x0 * 10) / 10; x < win.x1; x += 0.1) { const [px] = toPx(x, 0); g.beginPath(); g.moveTo(px, 0); g.lineTo(px, H); g.stroke(); }
+  for (let y = Math.ceil(win.y0 * 10) / 10; y < win.y1; y += 0.1) { const [, py] = toPx(0, y); g.beginPath(); g.moveTo(0, py); g.lineTo(W, py); g.stroke(); }
+  let [x0, y1] = toPx(ax0, ay1), [x1, y0] = toPx(ax1, ay0);
+  g.strokeStyle = css('--axis'); g.lineWidth = 1.5; g.strokeRect(x0, y1, x1 - x0, y0 - y1);
+  [x0, y1] = toPx(ax0 + e, ay1 - e); [x1, y0] = toPx(ax1 - e, ay0 + e);
+  g.setLineDash([5, 5]); g.strokeStyle = css('--axis'); g.lineWidth = 1; g.strokeRect(x0, y1, x1 - x0, y0 - y1); g.setLineDash([]);
+  g.fillStyle = css('--muted'); g.font = '12px system-ui, "Segoe UI", sans-serif';
+  g.fillText('paths must stay inside the dashed line · grid 10 cm', x0 + 6, y1 + 16);
+
+  line(g, S.path, S.inside ? css('--ref') : css('--bad'), 5);
+  if (S.robot) { line(g, S.robot.approach, css('--robot'), 1.2); line(g, S.robot.track, css('--robot'), 2.2); }
+  if (S.sim) line(g, S.sim.robot, css('--sim'), 2.2, S.simIdx);
+  S.pts.forEach((p, i) => dot(g, p, i === 0 ? 6 : 4, css('--surface'), css('--ink2')));
+  if (S.pts.length) {
+    const [px, py] = toPx(S.pts[0][0], S.pts[0][1]);
+    g.fillStyle = css('--ink'); g.font = '12px system-ui, "Segoe UI", sans-serif'; g.fillText('start', px + 10, py - 8);
+    if (S.start) { const a = S.start[2], L = 22; g.beginPath(); g.moveTo(px, py); g.lineTo(px + L * Math.cos(a), py - L * Math.sin(a));
+      g.strokeStyle = css('--ink2'); g.lineWidth = 2; g.stroke(); }
+  }
+  if (S.sim && S.sim.robot.length) {
+    const i = Math.min(S.simIdx, S.sim.robot.length - 1);
+    dot(g, S.sim.ref[i], 4, css('--ref'), css('--surface'));
+    dot(g, S.sim.robot[i], 6, css('--sim'), css('--surface'));
+  }
+  if (S.robot && S.robot.track && S.robot.track.length) {
+    if (S.robot.now) dot(g, S.robot.now.target, 4, css('--ref'), css('--surface'));
+    dot(g, S.robot.track[S.robot.track.length - 1], 6, css('--robot'), css('--surface'));
+  }
+}
+
+function drawErr() {
+  const c = $('errchart'), g = c.getContext('2d'), w = c.clientWidth, h = c.clientHeight;
+  g.clearRect(0, 0, w, h);
+  const L = 34, R = 10, T = 8, B = 22, series = [];
+  if (S.sim) series.push({ t: S.sim.t, e: S.sim.err, color: css('--sim') });
+  if (S.robot && S.robot.err) series.push({ t: S.robot.errT, e: S.robot.err, color: css('--robot') });
+  let tMax = 10, eMax = 2;
+  series.forEach(s => { tMax = Math.max(tMax, s.t[s.t.length - 1] || 0); eMax = Math.max(eMax, ...s.e); });
+  eMax = Math.ceil(eMax); const X = t => L + t / tMax * (w - L - R), Y = e => h - B - e / eMax * (h - T - B);
+  g.font = '11px system-ui, "Segoe UI", sans-serif'; g.fillStyle = css('--muted'); g.strokeStyle = css('--grid'); g.lineWidth = 1;
+  for (let k = 0; k <= 2; k++) { const e = eMax * k / 2; g.beginPath(); g.moveTo(L, Y(e)); g.lineTo(w - R, Y(e)); g.stroke(); g.fillText(e.toFixed(e < 10 ? 1 : 0) + ' cm', 2, Y(e) + 4); }
+  g.fillText('0 s', L, h - 6); g.fillText(tMax.toFixed(0) + ' s', w - R - 28, h - 6);
+  series.forEach(s => { g.beginPath(); s.t.forEach((t, i) => i ? g.lineTo(X(t), Y(s.e[i])) : g.moveTo(X(t), Y(s.e[i]))); g.strokeStyle = s.color; g.lineWidth = 2; g.lineJoin = 'round'; g.stroke(); });
+  if (!series.length) { g.fillStyle = css('--muted'); g.fillText('Simulate or run a path to see the error here.', L + 6, h / 2); }
+  if (S.hoverT != null && series.length) {
+    const t = S.hoverT; g.strokeStyle = css('--axis'); g.beginPath(); g.moveTo(X(t), T); g.lineTo(X(t), h - B); g.stroke();
+    let txt = t.toFixed(1) + ' s';
+    series.forEach((s, k) => { let i = s.t.findIndex(v => v >= t); if (i < 0) return; txt += (k ? '   real ' : '   sim ') + s.e[i].toFixed(1) + ' cm';
+      g.beginPath(); g.arc(X(s.t[i]), Y(s.e[i]), 4, 0, 2 * Math.PI); g.fillStyle = s.color; g.fill(); });
+    g.fillStyle = css('--ink'); g.fillText(txt, Math.min(X(t) + 8, w - 190), T + 10);
+  }
+  c._X = { L, R, tMax, w };
+}
+
+let refTimer = null;
+function changed() { S.sim = null; S.simIdx = 0; $('replay').disabled = true; $('simres').innerHTML = ''; clearTimeout(refTimer); refTimer = setTimeout(refresh, 120); draw(); drawErr(); }
+async function refresh() {
+  $('speedv').textContent = (+$('speed').value).toFixed(1) + ' cm/s'; $('wmaxv').textContent = (+$('wmax').value).toFixed(1) + ' rad/s';
+  const need = $('closed').checked ? 3 : 2;
+  if (S.pts.length < need) { S.path = null; S.start = null; S.summary = null; $('facts').innerHTML = `<tr><td>Place at least ${need} points.</td><td></td></tr>`; $('warnings').innerHTML = ''; buttons(); draw(); return; }
+  const r = await api('/api/reference', spec());
+  if (!r.ok) { $('warnings').innerHTML = `<div class="warn">${r.error}</div>`; return; }
+  S.path = r.path; S.start = r.start; S.summary = r.summary; S.inside = r.inside;
+  if ($('closed').checked) S.path = S.path.concat([S.path[0]]);
+  const s = r.summary, laps = $('closed').checked ? +$('loops').value : 1;
+  $('facts').innerHTML = `<tr><td>Length</td><td>${s.length_cm.toFixed(0)} cm</td></tr>
+    <tr><td>Time${laps > 1 ? ' (' + laps + ' laps)' : ''}</td><td>${(s.duration_s * laps).toFixed(0)} s</td></tr>
+    <tr><td>Speed</td><td>${s.v_min_cms.toFixed(1)}–${s.v_max_cms.toFixed(1)} cm/s</td></tr>
+    <tr><td>Tightest turn radius</td><td>${s.min_radius_cm > 200 ? 'straight' : s.min_radius_cm.toFixed(1) + ' cm'}</td></tr>`;
+  $('warnings').innerHTML = r.warnings.map(w => `<div class="warn">${w}</div>`).join('');
+  buttons(); draw();
+}
+function buttons() {
+  const ok = !!S.path && S.inside, running = S.robot && S.robot.state === 'running';
+  $('simulate').disabled = !S.path; $('dry').disabled = $('run').disabled = !ok || running; $('stop').disabled = !running;
+}
+function verdict(st, lostCm, random) {
+  if (st.lost) return ['bad', 'Loses the path (more than ' + lostCm.toFixed(0) + ' cm away)'];
+  if (st.max > 5) return ['bad', 'Follows it only loosely'];
+  if (random && random.some(x => x.lost || x.max > 5)) return ['', 'Follows it, but with little margin'];
+  return ['good', 'Follows it'];
+}
+
+$('simulate').onclick = async () => {
+  $('simulate').disabled = true; $('simres').innerHTML = '<p class="small">Simulating…</p>';
+  const r = await api('/api/simulate', spec()); $('simulate').disabled = false;
+  if (!r.ok) { $('simres').innerHTML = `<div class="warn">${r.error}</div>`; return; }
+  S.sim = r; const [cls, txt] = verdict(r.stats, r.lost_cm, r.random), med = r.random.map(x => x.median), mx = r.random.map(x => x.max), lost = r.random.filter(x => x.lost).length;
+  $('simres').innerHTML = `<p class="verdict ${cls}">${txt}</p>
+    <p class="small">Simulated robot: median ${r.stats.median.toFixed(1)} cm, max ${r.stats.max.toFixed(1)} cm.</p>
+    <p class="small">5 randomised robots: median ${Math.min(...med).toFixed(1)}–${Math.max(...med).toFixed(1)} cm, worst ${Math.max(...mx).toFixed(1)} cm${lost ? ', ' + lost + ' of 5 lost the path' : ''}.</p>`;
+  $('replay').disabled = false; play();
+};
+$('replay').onclick = play;
+function play() {
+  cancelAnimationFrame(S.anim); clearTimeout(S.animEnd);
+  const sim = S.sim, n = sim.robot.length, t0 = performance.now(), dur = Math.min(9000, Math.max(3000, sim.t[n - 1] * 160));
+  const show = i => { S.simIdx = i; draw(); $('readout').textContent = `sim ${sim.t[i].toFixed(1)} s · ${sim.err[i].toFixed(1)} cm`; };
+  const step = now => { if (S.sim !== sim) return;                       // the path changed while playing
+    show(Math.max(0, Math.min(n - 1, Math.floor((now - t0) / dur * n))));   // a frame's time can precede t0
+    if (S.simIdx < n - 1) S.anim = requestAnimationFrame(step); };
+  S.anim = requestAnimationFrame(step); drawErr();
+  S.animEnd = setTimeout(() => { if (S.sim === sim && S.simIdx < n - 1) show(n - 1); }, dur + 400);  // a hidden tab gets no frames
+}
+
+async function startRobot(mode) {
+  if (mode === 'run' && !confirm('The robot will drive: first to the start of the path, then along it.\n\nIs it charged, switched on, in the arena, and is someone at the rig?')) return;
+  const r = await api('/api/robot/start', spec({ mode }));
+  if (!r.ok) { $('robres').innerHTML = `<div class="warn">${r.error}</div>`; return; }
+  S.robot = { state: 'running', approach: [], track: [], err: [], errT: [] };
+  $('robres').innerHTML = `<p class="small">${mode === 'run' ? 'Starting: camera, then the robot drives to the start…' : 'Dry run: camera only, nothing is sent to the robot.'}</p>`;
+  const cam = $('cam'); cam.style.display = 'block';
+  const load = () => { cam.src = `http://localhost:${S.cfg.preview_port}/stream?${Date.now()}`; };
+  cam.onerror = () => { if (S.robot && S.robot.state === 'running') setTimeout(load, 1500); }; load();
+  buttons(); clearInterval(S.polling); S.polling = setInterval(poll, 500);
+}
+async function poll() {
+  const r = await api('/api/robot/status'); if (r.state === 'idle') return;
+  const prev = S.robot || {};
+  S.robot = Object.assign({}, r, { err: prev.err || [], errT: prev.errT || [] });
+  if (r.now && (!S.robot.errT.length || r.now.t > S.robot.errT[S.robot.errT.length - 1])) { S.robot.errT.push(r.now.t); S.robot.err.push(r.now.err); }
+  $('lines').textContent = (r.lines || []).join('\n');
+  if (r.now) $('readout').textContent = `robot ${r.now.t.toFixed(1)} s · ${r.now.err.toFixed(1)} cm`;
+  if (r.state === 'done') {
+    clearInterval(S.polling); $('cam').style.display = 'none'; $('cam').removeAttribute('src');
+    const ok = /all done/.test(r.result || ''), st = r.stats;
+    $('robres').innerHTML = (st ? `<p class="verdict ${ok && st.max <= 5 ? 'good' : 'bad'}">${ok ? (st.max <= 5 ? 'Followed it' : 'Followed it only loosely') : 'Did not finish'}</p>
+      <p class="small">${r.mode === 'run' ? 'Real robot' : 'Dry run (robot not driven)'}: median ${st.median.toFixed(1)} cm, max ${st.max.toFixed(1)} cm.</p>` : `<p class="verdict bad">Did not start tracking</p>`)
+      + `<p class="small">${(r.result || '').replace(/; log .*/, '')}</p>`;
+  }
+  buttons(); draw(); drawErr();
+}
+$('dry').onclick = () => startRobot('dry');
+$('run').onclick = () => startRobot('run');
+$('stop').onclick = async () => { $('stop').disabled = true; await api('/api/robot/stop', {}); poll(); };
+
+const cv = $('arena');
+function evPt(e) { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+function nearPoint(px, py) { let best = -1, bd = 12; S.pts.forEach((p, i) => { const [x, y] = toPx(p[0], p[1]), d = Math.hypot(x - px, y - py); if (d < bd) { bd = d; best = i; } }); return best; }
+cv.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return; const [px, py] = evPt(e), i = nearPoint(px, py); cv.setPointerCapture(e.pointerId);
+  S.drag = i >= 0 ? { kind: 'move', i } : { kind: 'new', px, py, stroke: [toWorld(px, py)], free: false };
+});
+cv.addEventListener('pointermove', e => {
+  if (!S.drag) return; const [px, py] = evPt(e);
+  if (S.drag.kind === 'move') { S.pts[S.drag.i] = clampPt(toWorld(px, py)); changed(); return; }
+  if (Math.hypot(px - S.drag.px, py - S.drag.py) > 6) S.drag.free = true;
+  if (S.drag.free) { S.drag.stroke.push(toWorld(px, py)); draw(); const g = cv.getContext('2d'); line(g, S.drag.stroke, css('--ink2'), 1.5); }
+});
+cv.addEventListener('pointerup', e => {
+  const d = S.drag; S.drag = null; if (!d || d.kind === 'move') return;
+  if (!d.free) { S.pts.push(clampPt(toWorld(d.px, d.py))); changed(); return; }
+  let last = S.pts.length ? S.pts[S.pts.length - 1] : null;                  // a drawn stroke: one waypoint every 4 cm
+  d.stroke.forEach((p, k) => { if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) >= 0.04 || (k === d.stroke.length - 1 && Math.hypot(p[0] - last[0], p[1] - last[1]) >= 0.015)) { last = clampPt(p); S.pts.push(last); } });
+  changed();
+});
+cv.addEventListener('contextmenu', e => { e.preventDefault(); const [px, py] = evPt(e), i = nearPoint(px, py); if (i >= 0) { S.pts.splice(i, 1); changed(); } });
+$('errchart').addEventListener('mousemove', e => { const c = $('errchart'), X = c._X; if (!X) return; const r = c.getBoundingClientRect();
+  S.hoverT = Math.max(0, Math.min(X.tMax, (e.clientX - r.left - X.L) / (X.w - X.L - X.R) * X.tMax)); drawErr(); });
+$('errchart').addEventListener('mouseleave', () => { S.hoverT = null; drawErr(); });
+
+$('undo').onclick = () => { S.pts.pop(); changed(); };
+$('clear').onclick = () => { S.pts = []; S.robot = null; $('robres').innerHTML = ''; $('lines').textContent = ''; changed(); };
+['speed', 'wmax', 'closed', 'loops', 'policy', 'plant'].forEach(id => $(id).addEventListener('input', changed));
+$('preset').onchange = () => {
+  const [[ax0, ax1], [ay0, ay1]] = S.cfg.arena, cx = (ax0 + ax1) / 2, cy = (ay0 + ay1) / 2, v = $('preset').value; if (!v) return;
+  const P = { s: [[-0.27, -0.14], [-0.12, 0.12], [0.03, -0.05], [0.18, 0.14], [0.28, -0.10]], zig: [[-0.28, -0.12], [-0.14, 0.12], [0, -0.12], [0.14, 0.12], [0.28, -0.12]],
+    loop: [[-0.2, -0.12], [0.1, -0.14], [0.22, 0.02], [0.02, 0.13], [-0.22, 0.05]],
+    eight: Array.from({ length: 12 }, (_, k) => { const a = 2 * Math.PI * k / 12; return [0.25 * Math.sin(a), 0.15 * Math.sin(2 * a)]; }) }[v];
+  S.pts = P.map(p => [cx + p[0], cy + p[1]]); $('closed').checked = v === 'loop' || v === 'eight'; $('preset').value = ''; S.robot = null; changed();
+};
+
+(async () => {
+  S.cfg = await api('/api/config');
+  const [[ax0, ax1], [ay0, ay1]] = S.cfg.arena; win = { x0: ax0 - PAD, x1: ax1 + PAD, y0: ay0 - PAD, y1: ay1 + PAD };
+  $('policy').innerHTML = S.cfg.policies.map(p => `<option value="${p}">${p.replace('ppo_', '')}</option>`).join('');
+  $('plant').innerHTML = S.cfg.plants.map(p => `<option value="${p}">fitted: ${p.replace('residual_', '').replace('.json', '')}</option>`).join('') + '<option value="">calibration map</option>';
+  window.addEventListener('resize', resize); window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { draw(); drawErr(); });
+  resize(); refresh();
+  const st = await api('/api/robot/status'); if (st.state === 'running') { S.robot = st; S.polling = setInterval(poll, 500); }
+})();
+</script>
+</body>
+</html>

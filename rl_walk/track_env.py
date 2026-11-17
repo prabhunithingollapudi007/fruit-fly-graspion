@@ -54,6 +54,51 @@ class Circle:
                 np.full_like(s, self.R * abs(self.w)), np.full_like(s, self.w))
 
 
+class PathRef:
+    """A reference along a smooth curve through hand-placed waypoints (path_ui.py): a cubic spline through the
+    points, run at `speed`, slowed where the curve is tight so that the turn rate stays below `w_max`.
+    closed: the curve returns to its first point and repeats every T seconds; otherwise it ends at the last point,
+    where the reference stops (`open` is then True and a run starts at t = 0)."""
+
+    def __init__(self, points, speed=0.045, closed=False, w_max=1.0, ds=0.002):
+        from scipy.interpolate import CubicSpline
+        P = np.asarray(points, float).reshape(-1, 2)
+        P = P[np.r_[True, np.hypot(*np.diff(P, axis=0).T) > 1e-4]]      # drop repeated points
+        if closed and np.hypot(*(P[0] - P[-1])) > 1e-4:
+            P = np.vstack([P, P[:1]])
+        if len(P) < (4 if closed else 2):
+            raise ValueError("a path needs at least 2 points (3 for a closed one)")
+        chord = np.r_[0, np.cumsum(np.hypot(*np.diff(P, axis=0).T))]
+        cs = CubicSpline(chord, P, bc_type="periodic" if closed else "natural")
+        u = np.linspace(0, chord[-1], max(int(chord[-1] / ds), 8) + 1)
+        xy, d1, d2 = cs(u), cs(u, 1), cs(u, 2)
+        kappa = (d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]) / np.maximum(np.hypot(d1[:, 0], d1[:, 1]) ** 3, 1e-12)
+        v = np.clip(np.minimum(speed, w_max / np.maximum(np.abs(kappa), 1e-9)), 0.01, None)
+        n = max(int(0.03 / ds) | 1, 3)                                  # smooth the speed over about 3 cm
+        pad = (v[-n:], v[:n]) if closed else (np.full(n, v[0]), np.full(n, v[-1]))
+        v = np.convolve(np.r_[pad[0], v, pad[1]], np.ones(n) / n, mode="same")[n:-n]
+        s = np.r_[0, np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]
+        self.t = np.r_[0, np.cumsum(np.diff(s) / (0.5 * (v[1:] + v[:-1])))]
+        self.xy, self.th, self.v, self.kappa = xy, np.unwrap(np.arctan2(d1[:, 1], d1[:, 0])), v, kappa
+        self.closed, self.open, self.T, self.length = closed, not closed, float(self.t[-1]), float(s[-1])
+
+    def at(self, t):
+        t = np.asarray(t, float)
+        tt = np.mod(t, self.T) if self.closed else np.clip(t, 0.0, self.T)
+        moving = np.ones_like(tt) if self.closed else ((t >= 0) & (t < self.T)).astype(float)
+        th = np.interp(tt, self.t, self.th)
+        v = np.interp(tt, self.t, self.v) * moving
+        return (np.interp(tt, self.t, self.xy[:, 0]), np.interp(tt, self.t, self.xy[:, 1]),
+                np.arctan2(np.sin(th), np.cos(th)), v, np.interp(tt, self.t, self.kappa) * v)
+
+    def summary(self):
+        """Numbers a person needs to judge the path, and what the policy was trained on for comparison."""
+        k = np.abs(self.kappa)
+        return dict(length_cm=100 * self.length, duration_s=self.T, v_min_cms=100 * float(self.v.min()),
+                    v_max_cms=100 * float(self.v.max()), min_radius_cm=100 / float(max(k.max(), 1e-9)),
+                    w_max=float(np.max(k * self.v)))
+
+
 def benchmark(shape):
     """The fixed references used for comparison: the MPC's figure-8 of run 20261112_152628 (50 x 30 cm in 40 s),
     and a circle of radius 15 cm in 20 s (4.7 cm/s), both at the arena's centre."""
