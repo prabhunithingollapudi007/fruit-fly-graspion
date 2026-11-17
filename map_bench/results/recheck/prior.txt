@@ -1,0 +1,15 @@
+-- design prior p0=35 gamma=1.0 (truth mean p0~51, gamma~0.62)
+sim  n= 49 warped   deadzone: 0.125 [0.114,0.150] [4s]
+sim  n= 49 dopt     deadzone: 0.436 [0.369,0.664] [24s]
+sim  n= 81 warped   deadzone: 0.110 [0.095,0.126] [29s]
+sim  n= 81 dopt     deadzone: 0.371 [0.300,0.468] [56s]
+-- design prior p0=65 gamma=1.0 (truth mean p0~51, gamma~0.62)
+sim  n= 49 warped   deadzone: 0.253 [0.193,0.268] [4s]
+sim  n= 49 dopt     deadzone: 0.202 [0.152,0.228] [22s]
+sim  n= 81 warped   deadzone: 0.256 [0.219,0.290] [26s]
+sim  n= 81 dopt     deadzone: 0.145 [0.118,0.184] [51s]
+-- design prior p0=50 gamma=1.2 (truth mean p0~51, gamma~0.62)
+sim  n= 49 warped   deadzone: 0.134 [0.106,0.160] [4s]
+sim  n= 49 dopt     deadzone: 0.145 [0.115,0.178] [21s]
+sim  n= 81 warped   deadzone: 0.105 [0.103,0.117] [26s]
+sim  n= 81 dopt     deadzone: 0.112 [0.095,0.134] [52s]

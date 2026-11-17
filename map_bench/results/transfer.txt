@@ -1,0 +1,18 @@
+  robot 0 done [8s]
+  robot 1 done [16s]
+  robot 2 done [23s]
+  robot 3 done [30s]
+  robot 4 done [37s]
+  robot 5 done [43s]
+  robot 6 done [51s]
+  robot 7 done [57s]
+
+new robot from k random segments, prior / fleet from 7 gridded robots (score in noise units, median over robots x 2 draws)
+  method           k=4     k=8     k=16    k=32   
+  scratch dz             -   0.486   0.263   0.158
+  scratch gp             -   1.261   0.893   0.498
+  fleet dz           1.663   1.663   1.663   1.663
+  fleet dz+affine    0.775   0.680   0.578   0.525
+  fleet dz+gp        0.707   0.510   0.346   0.250
+  fleet mlp+gp       0.780   0.608   0.427   0.332
+  popsim hier        0.423   0.300   0.191   0.138
