@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -80,22 +81,49 @@ class Arena:
         return (self.xmin + m <= x <= self.xmax - m) and (self.ymin + m <= y <= self.ymax - m)
 
 
+def load_arena_markers(path):
+    """Reference markers from graspion_tracking's arena.json ({"markers": [{"id", "center", "side", "z"}]},
+    metres, right-handed, z up) -> ({id: (x, y)}, printed side). All markers must lie in one plane (equal z) and
+    have one printed side."""
+    with open(path) as f:
+        d = json.load(f)
+    ms = d["markers"]
+    zs = {round(float(m.get("z", 0.0)), 6) for m in ms}
+    sides = {round(float(m["side"]), 6) for m in ms}
+    if len(zs) != 1:
+        raise ValueError(f"{path}: reference markers at several heights {sorted(zs)}; the tracker needs one plane")
+    if len(sides) != 1:
+        raise ValueError(f"{path}: reference markers of several sizes {sorted(sides)}")
+    return {int(m["id"]): (float(m["center"][0]), float(m["center"][1])) for m in ms}, sides.pop()
+
+
 @dataclass
 class RigConfig:
     """Everything a session needs to know about the rig. Stored as JSON (configs/rig_example.json)."""
     arena: Arena = field(default_factory=Arena)
-    reference_markers: dict = field(default_factory=dict)   # id -> (x, y) metres, at marker height
+    reference_markers: dict = field(default_factory=dict)   # id -> (x, y) metres, all in one plane
     camera: dict = field(default_factory=dict)               # index, width, height, fps, exposure, intrinsics
     bots: dict = field(default_factory=dict)                 # bot IR id (str) -> BotGeometry fields
     bridge: dict = field(default_factory=dict)               # port, baud, period_ms
 
     @classmethod
     def load(cls, path):
+        """Relative file paths in the config (reference_markers_file, camera.intrinsics) are taken from the
+        config file's folder."""
+        base = Path(path).resolve().parent
         with open(path) as f:
             d = json.load(f)
         arena = Arena(**d.get("arena", {}))
+        camera = dict(d.get("camera", {}))
+        if camera.get("intrinsics"):
+            camera["intrinsics"] = str(base / camera["intrinsics"])
         refs = {int(k): tuple(v) for k, v in d.get("reference_markers", {}).items()}
-        return cls(arena=arena, reference_markers=refs, camera=d.get("camera", {}), bots=d.get("bots", {}),
+        if d.get("reference_markers_file"):
+            if refs:
+                raise ValueError("give reference_markers or reference_markers_file, not both")
+            refs, side = load_arena_markers(base / d["reference_markers_file"])
+            camera.setdefault("reference_size_m", side)
+        return cls(arena=arena, reference_markers=refs, camera=camera, bots=d.get("bots", {}),
                    bridge=d.get("bridge", {}))
 
     def geometry(self, bot_id: int) -> BotGeometry:

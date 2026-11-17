@@ -1,0 +1,16 @@
+{
+ "camera": "acA3088-57um #25411594",
+ "saved": "2026-11-12T12:39:10+0000",
+ "user_set": "UserSet1",
+ "power_on_set": "UserSet1",
+ "width": 2700,
+ "height": 2064,
+ "offset_x": 192,
+ "offset_y": 0,
+ "exposure_us": 20000.0,
+ "gain_db": 5.0,
+ "pixel_format": "Mono8",
+ "resulting_frame_rate": 49.66229638458482,
+ "undo": "python3 camera_fix.py --default (power-on = factory Default)",
+ "reload_check": "UserSet1 loads back the same values"
+}

@@ -1,0 +1,73 @@
+{
+ "K": [
+  [
+   2624.2727657961877,
+   0.0,
+   1295.5237914055763
+  ],
+  [
+   0.0,
+   2624.2727657961877,
+   971.6142672719345
+  ],
+  [
+   0.0,
+   0.0,
+   1.0
+  ]
+ ],
+ "dist": [
+  -0.07931919923310335,
+  0.16832226242636142,
+  -0.004401476670267314,
+  0.0018045357053209628,
+  -0.09477588899138709
+ ],
+ "size": [
+  2700,
+  2064
+ ],
+ "meta": {
+  "tool": "tiles_fit.py (lens v3: 12 A4 ChArUco tiles, two-plane)",
+  "date": "2026-11-11T12:54:36+00:00",
+  "interim": false,
+  "status": "interim v4 (2026-11-12): lens v3 of 2026-11-11 (same focus and aperture) in the pixels of the camera view fixed on 2026-11-12 (2700 x 2064 at (192, 0), saved in UserSet1); no new lens shots (user: skip the tile redo for now); outside the old 2400 x 2000 window (columns < 344 or > 2743 and the rows < 32 or > 2031 of the sensor) the distortion is extrapolated",
+  "shots": [
+   "/data/calib_2026-11-11_tiles/shots/flat_123858.png",
+   "/data/calib_2026-11-11_tiles/shots/blocks_124138.png"
+  ],
+  "block": {
+   "page": 5,
+   "height_mm": 55.0,
+   "sd_mm": 0.5
+  },
+  "rms_px": 0.15784498003118974,
+  "window": {
+   "offset_x": 192,
+   "offset_y": 0,
+   "width": 2700,
+   "height": 2064,
+   "note": "the same lens model in the pixels of the camera view (cx, cy shifted by the offsets)"
+  },
+  "source": "/data/calib_2026-11-11/intrinsics_full_sensor.json"
+ },
+ "calibration": {
+  "rms_px": 0.15784498003118974,
+  "f_sd_px": 55.79209759326379,
+  "fx_rel_sd": 0.02126002232711386,
+  "gates": {
+   "rms_px": {
+    "value": 0.15784498003118974,
+    "limit": 0.5,
+    "pass": true
+   },
+   "fx_rel_std": {
+    "value": 0.02126002232711386,
+    "limit": 0.002,
+    "pass": false
+   }
+  },
+  "ok": true,
+  "note": "fx_rel_std gate (0.2 %) not met: f rests on the ream height (55 +- 0.5 mm); irrelevant at 1 mm"
+ }
+}
